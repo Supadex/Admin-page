@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Button,
   Input,
@@ -18,10 +18,11 @@ import {
   computePoolId,
   priceToSqrtPriceX96,
   sqrtPriceX96ToTick,
+  buildSeedMintParams,
+  isNativeAddress,
   type KnownToken,
   type PoolKeyStruct,
 } from '../utils/poolMath';
-import { APP_CONFIG } from '../utils/constants';
 import { shortenAddress, formatUSD } from '../utils/formatters';
 import { useAdminAuth } from '../hooks/useAdminAuth';
 import {
@@ -38,25 +39,46 @@ import {
   Search,
   Activity,
   Percent,
+  AlertTriangle,
 } from 'lucide-react';
-import { isAddress } from 'viem';
+import { formatUnits, isAddress, maxUint256, type Hex } from 'viem';
+import { useAccount, useWriteContract, usePublicClient, useBalance } from 'wagmi';
+import { getAddressesForChain } from '../contracts/addresses';
+import {
+  SupaPoolManagerABI,
+  SupaPositionManagerABI,
+  SupaVaultABI,
+  ERC20ABI,
+} from '../contracts/abis';
 
 export interface CreatePoolPageProps {
   onBack: () => void;
   onPoolCreated?: (poolKey: PoolKeyStruct) => void;
 }
 
+type DeployPhase =
+  | 'idle'
+  | 'initializing'
+  | 'approving'
+  | 'seeding'
+  | 'done'
+  | 'error';
+
 export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
   onBack,
   onPoolCreated,
 }) => {
   const { hasPermission } = useAdminAuth();
+  const { address: userAddress, chain } = useAccount();
+  const publicClient = usePublicClient();
+  const addrs = getAddressesForChain(chain?.id ?? 31337);
+  const { writeContractAsync } = useWriteContract();
 
-  // State: Pair Tokens
-  const [token0, setToken0] = useState<KnownToken>(KNOWN_TOKENS[1]); // WETH
-  const [token1, setToken1] = useState<KnownToken>(KNOWN_TOKENS[2]); // USDC
-  const [customToken0Address, setCustomToken0Address] = useState<string>(KNOWN_TOKENS[1].address);
-  const [customToken1Address, setCustomToken1Address] = useState<string>(KNOWN_TOKENS[2].address);
+  // State: Pair Tokens — default ETH / USDC (matches common bootstrap pair)
+  const [token0, setToken0] = useState<KnownToken>(KNOWN_TOKENS[0]); // ETH
+  const [token1, setToken1] = useState<KnownToken>(KNOWN_TOKENS[1]); // USDC
+  const [customToken0Address, setCustomToken0Address] = useState<string>(KNOWN_TOKENS[0].address);
+  const [customToken1Address, setCustomToken1Address] = useState<string>(KNOWN_TOKENS[1].address);
 
   // Token Selector Modal State
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
@@ -71,7 +93,8 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
   // State: Fee & Hook
   const [selectedFee, setSelectedFee] = useState<number>(3000); // 0.30%
   const [pluginAddress, setPluginAddress] = useState<string>(
-    '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC' // Dynamic LVR Hook
+    KNOWN_HOOKS.find((h) => h.type === 'lvr')?.address ??
+      '0x0000000000000000000000000000000000000000'
   );
   const [customPluginAddress, setCustomPluginAddress] = useState('');
   const [isCustomPlugin, setIsCustomPlugin] = useState(false);
@@ -84,9 +107,48 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
 
   // State: Execution / Deployment
   const [showJSON, setShowJSON] = useState(false);
-  const [isDeploying, setIsDeploying] = useState(false);
-  const [deploySuccess, setDeploySuccess] = useState(false);
+  const [deployPhase, setDeployPhase] = useState<DeployPhase>('idle');
+  const [deployError, setDeployError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [seedTxHash, setSeedTxHash] = useState<string | null>(null);
+  const [poolExists, setPoolExists] = useState(false);
+  const [poolLiquidity, setPoolLiquidity] = useState(0n);
+  const [poolCheckLoading, setPoolCheckLoading] = useState(false);
+
+  const isDeploying =
+    deployPhase === 'initializing' ||
+    deployPhase === 'approving' ||
+    deployPhase === 'seeding';
+  const deploySuccess = deployPhase === 'done';
+
+  const { data: nativeBal } = useBalance({
+    address: userAddress,
+    query: { enabled: !!userAddress },
+  });
+  const { data: erc20Bal0 } = useBalance({
+    address: userAddress,
+    token: isNativeAddress(token0.address) ? undefined : token0.address,
+    query: { enabled: !!userAddress && !isNativeAddress(token0.address) },
+  });
+  const { data: erc20Bal1 } = useBalance({
+    address: userAddress,
+    token: isNativeAddress(token1.address) ? undefined : token1.address,
+    query: { enabled: !!userAddress && !isNativeAddress(token1.address) },
+  });
+
+  const balance0Label = useMemo(() => {
+    if (isNativeAddress(token0.address)) {
+      return nativeBal ? formatUnits(nativeBal.value, nativeBal.decimals) : '—';
+    }
+    return erc20Bal0 ? formatUnits(erc20Bal0.value, erc20Bal0.decimals) : '—';
+  }, [token0.address, nativeBal, erc20Bal0]);
+
+  const balance1Label = useMemo(() => {
+    if (isNativeAddress(token1.address)) {
+      return nativeBal ? formatUnits(nativeBal.value, nativeBal.decimals) : '—';
+    }
+    return erc20Bal1 ? formatUnits(erc20Bal1.value, erc20Bal1.decimals) : '—';
+  }, [token1.address, nativeBal, erc20Bal1]);
 
   // Handle Token Swap
   const handleSwapTokens = () => {
@@ -147,11 +209,78 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
   // PoolId computation
   const poolId = useMemo(() => computePoolId(activePoolKey), [activePoolKey]);
 
-  // Price calculations
+  const refreshPoolState = useCallback(async () => {
+    if (!publicClient || !addrs?.poolManager || !poolId) {
+      setPoolExists(false);
+      setPoolLiquidity(0n);
+      return;
+    }
+    setPoolCheckLoading(true);
+    try {
+      const [slot0, liquidity] = await Promise.all([
+        publicClient.readContract({
+          address: addrs.poolManager,
+          abi: SupaPoolManagerABI,
+          functionName: 'getSlot0',
+          args: [poolId],
+        }) as Promise<Hex>,
+        publicClient.readContract({
+          address: addrs.poolManager,
+          abi: SupaPoolManagerABI,
+          functionName: 'getLiquidity',
+          args: [poolId],
+        }) as Promise<bigint>,
+      ]);
+      const sqrt = BigInt(slot0) & ((1n << 160n) - 1n);
+      setPoolExists(sqrt > 0n);
+      setPoolLiquidity(liquidity);
+      if (sqrt > 0n && deployPhase === 'idle') {
+        setDeployPhase('idle');
+      }
+    } catch {
+      setPoolExists(false);
+      setPoolLiquidity(0n);
+    } finally {
+      setPoolCheckLoading(false);
+    }
+  }, [publicClient, addrs?.poolManager, poolId, deployPhase]);
+
+  useEffect(() => {
+    void refreshPoolState();
+    setDeployPhase('idle');
+    setDeployError(null);
+    setTxHash(null);
+    setSeedTxHash(null);
+  }, [poolId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Price in pool currency order (token1/token0 raw geometric)
   const numPrice = parseFloat(priceInput) || 0;
+  const poolOrderedPrice = useMemo(() => {
+    if (!sortingCheck?.isReversed) {
+      return {
+        price: numPrice,
+        decimals0: token0.decimals,
+        decimals1: token1.decimals,
+        amount0,
+        amount1,
+      };
+    }
+    return {
+      price: numPrice > 0 ? 1 / numPrice : 0,
+      decimals0: token1.decimals,
+      decimals1: token0.decimals,
+      amount0: amount1,
+      amount1: amount0,
+    };
+  }, [sortingCheck, numPrice, token0.decimals, token1.decimals, amount0, amount1]);
+
   const sqrtPriceX96 = useMemo(() => {
-    return priceToSqrtPriceX96(numPrice, token0.decimals, token1.decimals);
-  }, [numPrice, token0.decimals, token1.decimals]);
+    return priceToSqrtPriceX96(
+      poolOrderedPrice.price,
+      poolOrderedPrice.decimals0,
+      poolOrderedPrice.decimals1
+    );
+  }, [poolOrderedPrice]);
 
   const tick = useMemo(() => sqrtPriceX96ToTick(sqrtPriceX96), [sqrtPriceX96]);
 
@@ -174,22 +303,180 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
     );
   }, [tokenSearch]);
 
-  // Execute deployment
-  const handleDeploy = () => {
-    setIsDeploying(true);
-    setTimeout(() => {
-      setIsDeploying(false);
-      setDeploySuccess(true);
-      const generatedHash = '0x8b3f11e9a7c204918e7b301c2384a51e60f7e1b5d92a104c8e71b2390f4e1982';
-      setTxHash(generatedHash);
-      if (onPoolCreated) {
-        onPoolCreated(activePoolKey);
-      }
-    }, 1600);
+  const waitForSuccess = async (hash: Hex) => {
+    if (!publicClient) throw new Error('RPC client unavailable');
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== 'success') throw new Error('Transaction reverted on-chain');
+    return hash;
   };
 
+  const approveIfNeeded = async (token: `0x${string}`, needed: bigint) => {
+    if (!userAddress || !addrs?.positionManager || !publicClient) return;
+    if (isNativeAddress(token) || needed === 0n) return;
+    const allowance = (await publicClient.readContract({
+      address: token,
+      abi: ERC20ABI,
+      functionName: 'allowance',
+      args: [userAddress, addrs.positionManager],
+    })) as bigint;
+    if (allowance >= needed) return;
+    const hash = (await writeContractAsync({
+      address: token,
+      abi: ERC20ABI,
+      functionName: 'approve',
+      args: [addrs.positionManager, maxUint256],
+    })) as Hex;
+    await waitForSuccess(hash);
+  };
+
+  // Execute initialize (if needed) + seed mint
+  const handleDeploy = async () => {
+    if (!addrs?.poolManager || !addrs.positionManager) {
+      setDeployError('PoolManager / PositionManager not deployed on this chain');
+      setDeployPhase('error');
+      return;
+    }
+    if (!userAddress || !publicClient) {
+      setDeployError('Connect a wallet on Anvil to deploy');
+      setDeployPhase('error');
+      return;
+    }
+
+    setDeployError(null);
+    setTxHash(null);
+    setSeedTxHash(null);
+
+    try {
+      // Re-check on-chain before writing
+      let alreadyInitialized = poolExists;
+      if (poolId) {
+        try {
+          const slot0 = (await publicClient.readContract({
+            address: addrs.poolManager,
+            abi: SupaPoolManagerABI,
+            functionName: 'getSlot0',
+            args: [poolId],
+          })) as Hex;
+          alreadyInitialized = (BigInt(slot0) & ((1n << 160n) - 1n)) > 0n;
+          setPoolExists(alreadyInitialized);
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (!alreadyInitialized) {
+        setDeployPhase('initializing');
+        const initHash = (await writeContractAsync({
+          address: addrs.poolManager,
+          abi: SupaPoolManagerABI,
+          functionName: 'initialize',
+          args: [activePoolKey, sqrtPriceX96, '0x'],
+        })) as Hex;
+        setTxHash(initHash);
+        await waitForSuccess(initHash);
+        setPoolExists(true);
+      }
+
+      const seed = buildSeedMintParams({
+        curveType: selectedCurve,
+        tickSpacing,
+        sqrtPriceX96,
+        amount0: poolOrderedPrice.amount0,
+        amount1: poolOrderedPrice.amount1,
+        decimals0: poolOrderedPrice.decimals0,
+        decimals1: poolOrderedPrice.decimals1,
+      });
+
+      const shouldSeed = seed.amount0Wei > 0n || seed.amount1Wei > 0n;
+      if (!shouldSeed) {
+        if (alreadyInitialized) {
+          throw new Error('Pool already initialized. Enter seed amounts to mint liquidity.');
+        }
+        setDeployPhase('done');
+        onPoolCreated?.(activePoolKey);
+        return;
+      }
+
+      if (seed.liquidity === 0n) {
+        throw new Error(
+          selectedCurve === CurveType.BIN_AMM || selectedCurve === CurveType.STABLE_AMM
+            ? 'Seed amounts cannot satisfy the on-chain price ratio (token1 = token0 × price). Increase token1 or reduce token0.'
+            : 'Computed seed liquidity is zero — adjust amounts or price'
+        );
+      }
+
+      setDeployPhase('seeding');
+      const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+      const liquidity = seed.liquidity;
+      // Bin/Stable engines derive amount1 from price; seed amounts are already ratio-sized.
+      // Small buffer absorbs wei rounding so mint cannot SlippageExceeded.
+      const amount0Max = seed.amount0Wei + (seed.amount0Wei * 5n) / 1000n + 1n;
+      const amount1Max = seed.amount1Wei + (seed.amount1Wei * 5n) / 1000n + 1n;
+
+      if (useVaultClaims) {
+        setDeployPhase('approving');
+        const approved = (await publicClient.readContract({
+          address: addrs.vault,
+          abi: SupaVaultABI,
+          functionName: 'isOperator',
+          args: [userAddress, addrs.positionManager],
+        })) as boolean;
+        if (!approved) {
+          const opHash = (await writeContractAsync({
+            address: addrs.vault,
+            abi: SupaVaultABI,
+            functionName: 'setOperator',
+            args: [addrs.positionManager, true],
+          })) as Hex;
+          await waitForSuccess(opHash);
+        }
+      } else {
+        setDeployPhase('approving');
+        await approveIfNeeded(activePoolKey.currency0, amount0Max);
+        await approveIfNeeded(activePoolKey.currency1, amount1Max);
+      }
+
+      setDeployPhase('seeding');
+
+      const value =
+        !useVaultClaims && isNativeAddress(activePoolKey.currency0) ? amount0Max : 0n;
+
+      const mintHash = (await writeContractAsync({
+        address: addrs.positionManager,
+        abi: SupaPositionManagerABI,
+        functionName: 'mint',
+        args: [
+          {
+            poolKey: activePoolKey,
+            tickLower: seed.tickLower,
+            tickUpper: seed.tickUpper,
+            liquidity,
+            amount0Max,
+            amount1Max,
+            recipient: userAddress,
+            deadline,
+            hookData: '0x',
+            payWithClaims: useVaultClaims,
+          },
+        ],
+        value,
+      })) as Hex;
+      setSeedTxHash(mintHash);
+      await waitForSuccess(mintHash);
+      await refreshPoolState();
+
+      setDeployPhase('done');
+      onPoolCreated?.(activePoolKey);
+    } catch (e) {
+      console.error(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setDeployError(msg);
+      setDeployPhase('error');
+      void refreshPoolState();
+    }
+  };
   return (
-    <div className="w-full max-w-7xl mx-auto py-4 px-4 sm:px-6 space-y-8 animate-fade-in">
+    <div className="relative z-0 w-full max-w-7xl mx-auto py-2 px-1 sm:px-2 space-y-8 animate-fade-in isolate">
       {/* Top Header & Breadcrumb */}
       <div className="flex items-center justify-between">
         <button
@@ -200,16 +487,22 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
           <div className="w-7 h-7 rounded-xl bg-neutral-100 dark:bg-white/[0.06] flex items-center justify-center group-hover:bg-neutral-200 dark:group-hover:bg-white/[0.12] transition-colors">
             <ArrowLeft className="w-4 h-4" />
           </div>
-          <span>Back to Control Center</span>
+          <span>Back to Pool Registry</span>
         </button>
 
         <div className="flex items-center gap-2">
           <Badge variant="brand" size="sm" className="font-mono">
             SupaPoolManager v1
           </Badge>
-          <Badge variant="purple" size="sm" className="font-mono">
-            Singleton Hook Native
-          </Badge>
+          {poolExists ? (
+            <Badge variant="success" size="sm" className="font-mono">
+              {poolLiquidity > 0n ? 'Live + Liquidity' : 'Initialized · Needs Seed'}
+            </Badge>
+          ) : (
+            <Badge variant="outline" size="sm" className="font-mono">
+              Not Initialized
+            </Badge>
+          )}
         </div>
       </div>
 
@@ -223,9 +516,9 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
       </div>
 
       {/* Two-Column Institutional Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start relative z-0">
         {/* LEFT COLUMN: 4 Step Deployment Configuration Form */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-7 space-y-6 relative z-0">
           {/* STEP 1: Select Token Pair */}
           <div className="bg-white dark:bg-[#111317] border border-neutral-200/80 dark:border-white/[0.08] rounded-3xl p-6 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
@@ -602,8 +895,9 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
                 value={amount0}
                 onChange={setAmount0}
                 tokenSymbol={token0.symbol}
+                tokenAddress={token0.address}
                 usdValue={amount0 ? (parseFloat(amount0) * (token0.priceUSD || 0)).toFixed(2) : undefined}
-                balance="25.0000"
+                balance={balance0Label}
                 isVaultClaim={useVaultClaims}
               />
 
@@ -612,8 +906,9 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
                 value={amount1}
                 onChange={setAmount1}
                 tokenSymbol={token1.symbol}
+                tokenAddress={token1.address}
                 usdValue={amount1 ? (parseFloat(amount1) * (token1.priceUSD || 0)).toFixed(2) : undefined}
-                balance="85,000.00"
+                balance={balance1Label}
                 isVaultClaim={useVaultClaims}
               />
             </div>
@@ -625,7 +920,7 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
                   Settle with ERC-6909 Vault Claims
                 </span>
                 <p className="text-[11px] text-neutral-500">
-                  Deduct from singleton ledger credits rather than raw ERC-20 transfers.
+                  Leave off to pull ERC-20 / native balances. Claims require prior vault deposits.
                 </p>
               </div>
               <Toggle checked={useVaultClaims} onChange={setUseVaultClaims} />
@@ -634,9 +929,30 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
         </div>
 
         {/* RIGHT COLUMN: Deterministic PoolId, Diff Audit & Execution */}
-        <div className="lg:col-span-5 sticky top-6 space-y-6">
+        <div className="lg:col-span-5 sticky top-20 z-10 self-start space-y-6 min-w-0 overflow-hidden">
+          {poolExists && (
+            <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] flex gap-3 min-w-0">
+              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="space-y-1 text-xs min-w-0">
+                <p className="font-semibold text-amber-600 dark:text-amber-400">
+                  Pool already initialized on-chain
+                </p>
+                <p className="text-neutral-600 dark:text-neutral-400 leading-relaxed">
+                  Re-initialize is impossible. {poolLiquidity > 0n
+                    ? 'Active liquidity exists — minting adds another full-range position.'
+                    : 'No in-range liquidity yet — mint a seed position so swaps can route.'}
+                </p>
+                {poolId && (
+                  <p className="font-mono text-[10px] text-neutral-500 pt-1 break-all">
+                    {shortenAddress(poolId, 8)}
+                    {poolCheckLoading ? ' · checking…' : ''}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
           {/* Deterministic PoolId & Summary Card */}
-          <div className="bg-white dark:bg-[#111317] border border-neutral-200/80 dark:border-white/[0.08] rounded-3xl p-6 shadow-xs space-y-4">
+          <div className="bg-white dark:bg-[#111317] border border-neutral-200/80 dark:border-white/[0.08] rounded-3xl p-6 shadow-xs space-y-4 min-w-0 overflow-hidden">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Hash className="w-4 h-4 text-neutral-900 dark:text-white" />
@@ -686,9 +1002,19 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
             {/* Live State Mutation Diff */}
             <DiffViewer
               label="SupaPoolManager Registration"
-              description="Registers immutable key in singleton state registry."
-              previousValue="UNINITIALIZED"
-              nextValue={`INITIALIZED (${shortenAddress(poolId, 4)})`}
+              description={
+                poolExists
+                  ? 'Pool key is already registered. Next action mints liquidity only.'
+                  : 'Registers immutable key in singleton state registry, then seeds liquidity.'
+              }
+              previousValue={poolExists ? `INITIALIZED (${poolId ? shortenAddress(poolId, 4) : '—'})` : 'UNINITIALIZED'}
+              nextValue={
+                poolExists
+                  ? poolLiquidity > 0n
+                    ? 'MINT POSITION (+liquidity)'
+                    : 'SEED LIQUIDITY (mint)'
+                  : `INITIALIZED (${poolId ? shortenAddress(poolId, 4) : '—'})`
+              }
               unit=""
               isDestructive={false}
             />
@@ -708,17 +1034,25 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
               {showJSON && (
                 <div className="mt-3">
                   <JSONInspector
-                    title="IPoolManager.initialize"
+                    title={
+                      poolExists
+                        ? 'PositionManager.mint (seed)'
+                        : 'IPoolManager.initialize + PositionManager.mint'
+                    }
                     data={{
-                      poolManager: APP_CONFIG.contracts.supaPoolManager,
+                      poolManager: addrs?.poolManager,
+                      positionManager: addrs?.positionManager,
                       poolKey: activePoolKey,
                       sqrtPriceX96: sqrtPriceX96.toString(),
                       initialTick: tick,
                       hookData: '0x',
+                      poolExists,
+                      poolLiquidity: poolLiquidity.toString(),
                       seedDeposit: {
-                        amount0,
-                        amount1,
+                        amount0: poolOrderedPrice.amount0,
+                        amount1: poolOrderedPrice.amount1,
                         useVaultClaims,
+                        fullRange: selectedCurve === CurveType.CLAMM,
                       },
                     }}
                   />
@@ -731,38 +1065,74 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
               <Button
                 variant="brand"
                 size="lg"
-                onClick={handleDeploy}
-                disabled={isDeploying || deploySuccess || !hasPermission('admin.pool.create')}
+                onClick={() => {
+                  if (deploySuccess) {
+                    setDeployPhase('idle');
+                    setDeployError(null);
+                    setTxHash(null);
+                    setSeedTxHash(null);
+                  }
+                  void handleDeploy();
+                }}
+                disabled={isDeploying || !hasPermission('admin.pool.create')}
                 className="w-full text-xs font-semibold shadow-md"
               >
-                {isDeploying ? (
+                {deployPhase === 'initializing' ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Simulating & Deploying On-Chain...</span>
+                    <span>Initializing Pool...</span>
+                  </>
+                ) : deployPhase === 'approving' ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Approving Seed Tokens...</span>
+                  </>
+                ) : deployPhase === 'seeding' ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Minting Seed Liquidity...</span>
                   </>
                 ) : deploySuccess ? (
                   <>
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Pool Successfully Initialized</span>
+                    <span>
+                      {seedTxHash ? 'Seeded — Mint Again?' : 'Initialized — Seed Liquidity'}
+                    </span>
+                  </>
+                ) : poolExists ? (
+                  <>
+                    <PlayCircle className="w-4 h-4" />
+                    <span>Mint Seed Liquidity</span>
                   </>
                 ) : (
                   <>
                     <PlayCircle className="w-4 h-4" />
-                    <span>Initialize Pool Singleton</span>
+                    <span>Initialize &amp; Seed Pool</span>
                   </>
                 )}
               </Button>
 
+              {deployError && (
+                <div className="mt-3 p-3 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 text-[11px] font-mono break-all">
+                  {deployError}
+                </div>
+              )}
+
               {deploySuccess && txHash && (
-                <div className="mt-3 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-xs font-mono flex items-center justify-between">
-                  <span>Tx: {shortenAddress(txHash, 6)}</span>
-                  <button
-                    type="button"
-                    onClick={onBack}
-                    className="underline text-[11px] font-semibold cursor-pointer"
-                  >
-                    View in Registry
-                  </button>
+                <div className="mt-3 p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 text-xs font-mono space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <span>Init: {shortenAddress(txHash, 6)}</span>
+                    <button
+                      type="button"
+                      onClick={onBack}
+                      className="underline text-[11px] font-semibold cursor-pointer"
+                    >
+                      View in Registry
+                    </button>
+                  </div>
+                  {seedTxHash && (
+                    <div className="text-[11px] opacity-90">Seed: {shortenAddress(seedTxHash, 6)}</div>
+                  )}
                 </div>
               )}
             </div>

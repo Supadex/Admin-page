@@ -39,9 +39,10 @@ export const TokenLogo: React.FC<TokenLogoProps> = ({
 }) => {
   const [imgError, setImgError] = useState(false);
 
-  const cleanSymbol = symbol.toUpperCase().replace(/^C/, '');
+  const cleanSymbol = symbol.toUpperCase().replace(/^C(?=[A-Z])/, '');
   const primarySrc =
     logoURI ||
+    POPULAR_LOGOS[symbol.toUpperCase()] ||
     POPULAR_LOGOS[cleanSymbol] ||
     (address && address !== '0x0000000000000000000000000000000000000000'
       ? `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/${address}/logo.png`
@@ -59,11 +60,12 @@ export const TokenLogo: React.FC<TokenLogoProps> = ({
           className
         )}
         loading="lazy"
+        referrerPolicy="no-referrer"
       />
     );
   }
 
-  const initial = (symbol.trim()[0] || '?').toUpperCase();
+  const initial = (symbol.trim().slice(0, 1) || '?').toUpperCase();
   return (
     <div
       className={cn(
@@ -71,6 +73,7 @@ export const TokenLogo: React.FC<TokenLogoProps> = ({
         SIZE_MAP[size],
         className
       )}
+      title={symbol}
     >
       {initial}
     </div>

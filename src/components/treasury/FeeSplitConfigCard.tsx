@@ -6,7 +6,7 @@ import type { FeeSplitConfig } from '../../hooks/useFeeTreasury';
 
 interface FeeSplitConfigCardProps {
   config: FeeSplitConfig;
-  onUpdateSplit: (newSplit: Partial<FeeSplitConfig>) => void;
+  onUpdateSplit: (newSplit: Partial<FeeSplitConfig>) => void | Promise<void>;
   canEdit: boolean;
 }
 
@@ -24,9 +24,9 @@ export const FeeSplitConfigCard: React.FC<FeeSplitConfigCardProps> = ({
   const totalShare = daoShare + lpShare + insuranceShare;
   const isValidTotal = Math.abs(totalShare - 100) < 0.01;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!isValidTotal) return;
-    onUpdateSplit({
+    await onUpdateSplit({
       daoTreasuryShareBps: Math.round(daoShare * 100),
       lpStakingShareBps: Math.round(lpShare * 100),
       insuranceReserveShareBps: Math.round(insuranceShare * 100),

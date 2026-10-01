@@ -93,7 +93,7 @@ export const PoolEmergencyTable: React.FC<PoolEmergencyTableProps> = ({
       ),
     },
     {
-      key: 'id',
+      key: 'circuitState',
       header: 'Circuit State',
       render: (pool) => {
         const isPaused = !!pausedPools[pool.id];
@@ -105,7 +105,7 @@ export const PoolEmergencyTable: React.FC<PoolEmergencyTableProps> = ({
       },
     },
     {
-      key: 'id',
+      key: 'emergencyAction',
       header: 'Emergency Action',
       align: 'right',
       render: (pool) => {
@@ -120,7 +120,7 @@ export const PoolEmergencyTable: React.FC<PoolEmergencyTableProps> = ({
               className="text-xs gap-1.5 font-mono"
             >
               <Clock className="w-3 h-3 text-amber-500" />
-              <span>Queue Unpause</span>
+              <span>Unpause Pool</span>
             </Button>
           );
         }

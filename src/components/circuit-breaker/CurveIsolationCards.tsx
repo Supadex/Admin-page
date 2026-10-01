@@ -1,6 +1,13 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Badge, Button } from '../ui';
+import { formatUSD } from '../../utils/formatters';
 import { Layers, Power, Lock, Unlock, Clock, AlertTriangle } from 'lucide-react';
+
+export interface CurvePoolStat {
+  curveType: 'CLAMM' | 'BinAMM' | 'StableAMM';
+  tvlUSD: number;
+  volume24h: number;
+}
 
 interface CurveIsolationCardsProps {
   isCurvePaused: {
@@ -8,6 +15,7 @@ interface CurveIsolationCardsProps {
     binAmm: boolean;
     stableAmm: boolean;
   };
+  pools: CurvePoolStat[];
   onPauseCurve: (curveType: 0 | 1 | 2) => void;
   onRequestUnpause: (curveType: 0 | 1 | 2) => void;
   canTriggerPause: boolean;
@@ -17,56 +25,65 @@ interface CurveIsolationCardsProps {
 
 export const CurveIsolationCards: React.FC<CurveIsolationCardsProps> = ({
   isCurvePaused,
+  pools,
   onPauseCurve,
   onRequestUnpause,
   canTriggerPause,
   canManageTimelock,
   isSubmitting,
 }) => {
+  const stats = useMemo(() => {
+    const empty = { poolCount: 0, tvlUSD: 0, volume24h: 0 };
+    const byCurve = {
+      CLAMM: { ...empty },
+      BinAMM: { ...empty },
+      StableAMM: { ...empty },
+    };
+    for (const p of pools) {
+      const bucket = byCurve[p.curveType];
+      if (!bucket) continue;
+      bucket.poolCount += 1;
+      bucket.tvlUSD += p.tvlUSD || 0;
+      bucket.volume24h += p.volume24h || 0;
+    }
+    return byCurve;
+  }, [pools]);
+
   const curves = [
     {
       id: 0 as const,
       name: 'CLAMM Engine',
       type: 'Concentrated Liquidity',
-      tag: 'Tick-Spaced Ranges',
       isPaused: isCurvePaused.clamm,
-      poolCount: 14,
-      volume24h: '$8.24M',
-      riskTier: 'Low',
+      ...stats.CLAMM,
     },
     {
       id: 1 as const,
       name: 'BinAMM Engine',
       type: 'Discretized Bins',
-      tag: 'Zero Slippage Bins',
       isPaused: isCurvePaused.binAmm,
-      poolCount: 8,
-      volume24h: '$4.12M',
-      riskTier: 'Medium',
+      ...stats.BinAMM,
     },
     {
       id: 2 as const,
       name: 'StableAMM Engine',
       type: 'Invariable Peg Curve',
-      tag: 'Amplified Invariant (A)',
       isPaused: isCurvePaused.stableAmm,
-      poolCount: 5,
-      volume24h: '$2.55M',
-      riskTier: 'Low',
+      ...stats.StableAMM,
     },
   ];
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-secondary-theme" />
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Layers className="w-4 h-4 text-secondary-theme shrink-0" />
           <h3 className="text-xs font-semibold uppercase tracking-wider text-secondary-theme">
             Tier 2: Curve Engine Isolation Matrix
           </h3>
         </div>
-        <span className="text-[11px] font-mono text-secondary-theme">
-          Solidity Mapping: <code className="text-primary-theme">isCurvePaused[uint8]</code>
+        <span className="text-[11px] font-mono text-secondary-theme shrink-0 hidden sm:inline">
+          Live from Initialize logs
         </span>
       </div>
 
@@ -74,16 +91,16 @@ export const CurveIsolationCards: React.FC<CurveIsolationCardsProps> = ({
         {curves.map((curve) => (
           <div
             key={curve.id}
-            className={`p-4 rounded-2xl border transition-all duration-200 flex flex-col justify-between ${
+            className={`p-4 rounded-2xl border transition-all duration-200 flex flex-col justify-between min-w-0 ${
               curve.isPaused
                 ? 'bg-red-500/5 border-red-500/20'
                 : 'bg-surface-theme border-hairline-theme hover:border-hairline-focus'
             }`}
           >
             <div className="space-y-3">
-              <div className="flex items-start justify-between">
-                <div className="space-y-0.5">
-                  <div className="flex items-center gap-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-primary-theme font-mono">
                       {curve.name}
                     </span>
@@ -93,7 +110,7 @@ export const CurveIsolationCards: React.FC<CurveIsolationCardsProps> = ({
                   </div>
                   <p className="text-xs text-secondary-theme">{curve.type}</p>
                 </div>
-                <div className="p-2 rounded-xl bg-elevated-theme border border-hairline-theme">
+                <div className="p-2 rounded-xl bg-elevated-theme border border-hairline-theme shrink-0">
                   {curve.isPaused ? (
                     <Lock className="w-4 h-4 text-red-500" />
                   ) : (
@@ -103,13 +120,13 @@ export const CurveIsolationCards: React.FC<CurveIsolationCardsProps> = ({
               </div>
 
               <div className="grid grid-cols-2 gap-2 pt-2 border-t border-hairline-theme text-xs font-mono">
-                <div>
+                <div className="min-w-0">
                   <span className="text-secondary-theme block text-[10px]">ACTIVE POOLS</span>
                   <span className="text-primary-theme font-semibold">{curve.poolCount}</span>
                 </div>
-                <div>
-                  <span className="text-secondary-theme block text-[10px]">24H VOLUME</span>
-                  <span className="text-primary-theme font-semibold">{curve.volume24h}</span>
+                <div className="min-w-0">
+                  <span className="text-secondary-theme block text-[10px]">TVL</span>
+                  <span className="text-primary-theme font-semibold">{formatUSD(curve.tvlUSD)}</span>
                 </div>
               </div>
 
@@ -131,7 +148,7 @@ export const CurveIsolationCards: React.FC<CurveIsolationCardsProps> = ({
                   className="w-full text-xs gap-1.5 font-mono"
                 >
                   <Clock className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Queue Timelocked Unpause</span>
+                  <span>Unpause Curve (Timelock)</span>
                 </Button>
               ) : (
                 <Button

@@ -10,6 +10,12 @@ export interface JSONInspectorProps {
   className?: string;
 }
 
+/** JSON.stringify cannot encode bigint — coerce to decimal string for inspectors/exports. */
+function jsonReplacer(_key: string, value: unknown): unknown {
+  if (typeof value === 'bigint') return value.toString();
+  return value;
+}
+
 export const JSONInspector: React.FC<JSONInspectorProps> = ({
   title,
   data,
@@ -20,9 +26,8 @@ export const JSONInspector: React.FC<JSONInspectorProps> = ({
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
-  const formattedJSON = typeof data === 'string' 
-    ? data 
-    : JSON.stringify(data, null, 2);
+  const formattedJSON =
+    typeof data === 'string' ? data : JSON.stringify(data, jsonReplacer, 2);
 
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();

@@ -16,14 +16,20 @@ import {
   AccountDetailsModal,
 } from './components/auth';
 import { CreatePoolPage } from './pages/CreatePoolPage';
-import { Button, Badge } from './components/ui';
+import { Button, Badge, Input } from './components/ui';
 import { APP_CONFIG } from './utils/constants';
 import { shortenAddress, formatUSD } from './utils/formatters';
 import { useAdminAuth } from './hooks/useAdminAuth';
+import { useAdminPools, type AdminPool } from './hooks/useAdminPools';
+import { useCircuitBreaker } from './hooks/useCircuitBreaker';
 import { CircuitBreakerControl } from './components/circuit-breaker';
 import { LVRCalibrationConsole } from './components/lvr-oracle';
 import { TreasuryClaimsConsole } from './components/treasury';
 import { AuditLogsConsole } from './components/audit-logs';
+import { getAddressesForChain } from './contracts/addresses';
+import { PluginWhitelistABI } from './contracts/abis';
+import { useAccount, useWriteContract, useReadContract } from 'wagmi';
+import { isAddress, type Address } from 'viem';
 import {
   Activity,
   Layers,
@@ -37,81 +43,48 @@ import {
   Power,
 } from 'lucide-react';
 
-interface MockPoolRecord {
-  id: string;
-  pair: string;
-  symbol0?: string;
-  symbol1?: string;
-  curveType: 'CLAMM' | 'BinAMM' | 'StableAMM';
-  feeTier: string;
-  tvlUSD: number;
-  volume24h: number;
-  hookAddress: string;
-  status: 'ACTIVE' | 'PAUSED';
-}
-
-
-const INITIAL_POOLS: MockPoolRecord[] = [
-  {
-    id: '0x1a8f...90ab',
-    pair: 'ETH / USDC',
-    curveType: 'CLAMM',
-    feeTier: '0.05%',
-    tvlUSD: 14250000,
-    volume24h: 3820000,
-    hookAddress: '0x3C44...93BC',
-    status: 'ACTIVE',
-  },
-  {
-    id: '0x4b7c...21de',
-    pair: 'WBTC / ETH',
-    curveType: 'CLAMM',
-    feeTier: '0.30%',
-    tvlUSD: 8940000,
-    volume24h: 1950000,
-    hookAddress: '0x90F7...b906',
-    status: 'ACTIVE',
-  },
-  {
-    id: '0x7e2a...55ff',
-    pair: 'USDC / USDT',
-    curveType: 'StableAMM',
-    feeTier: '0.01%',
-    tvlUSD: 24500000,
-    volume24h: 8400000,
-    hookAddress: '0x15d3...6A65',
-    status: 'ACTIVE',
-  },
-  {
-    id: '0x99dd...01cc',
-    pair: 'ARB / ETH',
-    curveType: 'BinAMM',
-    feeTier: '0.20%',
-    tvlUSD: 3120000,
-    volume24h: 740000,
-    hookAddress: '0x9965...A4dc',
-    status: 'PAUSED',
-  },
-];
-
 export function App() {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
-  const [circuitBreakerTier, setCircuitBreakerTier] = useState<number>(0);
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
-  const [pools, setPools] = useState<MockPoolRecord[]>(INITIAL_POOLS);
+  const [whitelistInput, setWhitelistInput] = useState('');
 
+  const { activeRole, activeRoleDef, hasPermission, addresses } = useAdminAuth();
+  const { chain } = useAccount();
+  const { pools, isLoading: poolsLoading, refetch: refetchPools } = useAdminPools();
+  const { currentTier, refetchAll: refetchCircuit } = useCircuitBreaker();
+  const addrs = getAddressesForChain(chain?.id ?? 31337);
+  const { writeContractAsync } = useWriteContract();
 
-  const { activeRole, activeRoleDef, hasPermission } = useAdminAuth();
+  const { data: lvrWhitelisted, refetch: refetchWl } = useReadContract({
+    address: addrs?.pluginWhitelist,
+    abi: PluginWhitelistABI,
+    functionName: 'isPluginWhitelisted',
+    args: addrs?.lvrShieldPlugin ? [addrs.lvrShieldPlugin] : undefined,
+    query: { enabled: !!addrs?.pluginWhitelist && !!addrs?.lvrShieldPlugin },
+  });
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    setTimeout(() => setIsRefreshing(false), 800);
+    await Promise.all([refetchPools(), refetchCircuit()]);
+    setIsRefreshing(false);
   };
 
-  const poolColumns: AuditColumn<MockPoolRecord>[] = [
+  const handleWhitelistPlugin = async () => {
+    if (!addrs?.pluginWhitelist || !isAddress(whitelistInput)) return;
+    await writeContractAsync({
+      address: addrs.pluginWhitelist,
+      abi: PluginWhitelistABI,
+      functionName: 'setPluginWhitelisted',
+      args: [whitelistInput as Address, true],
+    });
+    await refetchWl();
+    setWhitelistInput('');
+  };
+
+  const poolColumns: AuditColumn<AdminPool>[] = [
     {
       key: 'pair',
       header: 'Pool Pair',
@@ -126,11 +99,7 @@ export function App() {
       header: 'Curve Engine',
       render: (pool) => {
         const variant =
-          pool.curveType === 'CLAMM'
-            ? 'info'
-            : pool.curveType === 'BinAMM'
-            ? 'curve'
-            : 'warning';
+          pool.curveType === 'CLAMM' ? 'info' : pool.curveType === 'BinAMM' ? 'curve' : 'warning';
         return <Badge variant={variant}>{pool.curveType}</Badge>;
       },
     },
@@ -141,17 +110,10 @@ export function App() {
     },
     {
       key: 'tvlUSD',
-      header: 'TVL',
+      header: 'TVL (est.)',
       render: (pool) => (
-        <span className="font-mono text-primary-theme">{formatUSD(pool.tvlUSD)}</span>
-      ),
-    },
-    {
-      key: 'volume24h',
-      header: '24h Volume',
-      render: (pool) => (
-        <span className="font-mono text-secondary-theme">
-          {formatUSD(pool.volume24h)}
+        <span className="font-mono text-primary-theme">
+          {pool.tvlUSD > 0 ? formatUSD(pool.tvlUSD) : '—'}
         </span>
       ),
     },
@@ -161,7 +123,7 @@ export function App() {
       render: (pool) => (
         <div className="flex items-center gap-1.5 font-mono text-secondary-theme">
           <span>{pool.hookAddress}</span>
-          <ExternalLink className="w-3 h-3 text-secondary-theme hover:text-primary-theme" />
+          <ExternalLink className="w-3 h-3 text-secondary-theme" />
         </div>
       ),
     },
@@ -169,16 +131,15 @@ export function App() {
       key: 'status',
       header: 'Status',
       render: (pool) => (
-        <Badge variant={pool.status === 'ACTIVE' ? 'success' : 'danger'}>
-          {pool.status}
-        </Badge>
+        <Badge variant={pool.status === 'ACTIVE' ? 'success' : 'danger'}>{pool.status}</Badge>
       ),
     },
   ];
 
+  const totalTvl = pools.reduce((s, p) => s + p.tvlUSD, 0);
+
   return (
     <div className="flex min-h-screen bg-base-theme text-primary-theme selection:bg-brand-purple/20 transition-colors duration-200">
-      {/* Institutional Collapsible Sidebar */}
       <AdminSidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -186,7 +147,6 @@ export function App() {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
-      {/* Main Admin Viewport */}
       <div className="flex-1 flex flex-col min-w-0">
         <AdminHeader
           currentTabName={activeTab.replace('-', ' ')}
@@ -195,7 +155,14 @@ export function App() {
         />
 
         <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
-          {/* Active Session & RBAC Privileges Banner */}
+          {!addresses && (
+            <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 text-xs text-amber-600 dark:text-amber-400">
+              Protocol contracts are not deployed on this network. Switch to Anvil (31337) or sync
+              addresses from a Forge broadcast.
+            </div>
+          )}
+
+          {activeTab !== 'create-pool' && (
           <div className="p-4 rounded-2xl bg-surface-theme border border-hairline-theme flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-xl bg-elevated-theme border border-hairline-theme">
@@ -208,9 +175,7 @@ export function App() {
                   </span>
                   <RoleBadge role={activeRole} showIcon={false} size="sm" />
                 </div>
-                <p className="text-xs text-secondary-theme">
-                  {activeRoleDef.description}
-                </p>
+                <p className="text-xs text-secondary-theme">{activeRoleDef.description}</p>
               </div>
             </div>
 
@@ -224,9 +189,9 @@ export function App() {
               <span>Privilege Matrix</span>
             </Button>
           </div>
+          )}
 
-          {/* Access Warning Banner if not permitted for state actions */}
-          {!hasPermission('admin.circuit_breaker.trigger') && (
+          {activeTab !== 'create-pool' && !hasPermission('admin.circuit_breaker.trigger') && (
             <AccessDeniedBanner
               requiredRole="GUARDIAN or OWNER"
               actionName="halt protocol swaps or escalate circuit breaker"
@@ -234,7 +199,6 @@ export function App() {
             />
           )}
 
-          {/* View Tab Routing */}
           {activeTab === 'circuit-breaker' ? (
             <CircuitBreakerControl
               pools={pools.map((p) => ({
@@ -256,34 +220,13 @@ export function App() {
           ) : activeTab === 'create-pool' ? (
             <CreatePoolPage
               onBack={() => setActiveTab('pools')}
-              onPoolCreated={(newPool) => {
-                const curveNames: Record<number, 'CLAMM' | 'BinAMM' | 'StableAMM'> = {
-                  0: 'CLAMM',
-                  1: 'BinAMM',
-                  2: 'StableAMM',
-                };
-                const newEntry: MockPoolRecord = {
-                  id: `${newPool.currency0.slice(0, 6)}...${newPool.currency1.slice(-4)}`,
-                  pair: `WETH / USDC`,
-                  symbol0: 'WETH',
-                  symbol1: 'USDC',
-                  curveType: curveNames[newPool.curveType] || 'CLAMM',
-                  feeTier: `${(newPool.fee / 10000).toFixed(2)}%`,
-                  tvlUSD: 50000,
-                  volume24h: 0,
-                  hookAddress:
-                    newPool.plugin === '0x0000000000000000000000000000000000000000'
-                      ? 'None'
-                      : `${newPool.plugin.slice(0, 6)}...${newPool.plugin.slice(-4)}`,
-                  status: 'ACTIVE',
-                };
-                setPools((prev) => [newEntry, ...prev]);
+              onPoolCreated={() => {
+                void refetchPools();
                 setActiveTab('pools');
               }}
             />
           ) : activeTab === 'pools' ? (
             <div className="space-y-6">
-              {/* Pools Header & Wizard Action */}
               <div className="p-6 rounded-2xl bg-surface-theme border border-hairline-theme flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
@@ -293,7 +236,8 @@ export function App() {
                     </h2>
                   </div>
                   <p className="text-xs text-secondary-theme">
-                    Deploy concentrated (CLAMM), discretized bin (BinAMM), or amplified stableswap (StableAMM) pairs.
+                    Live pools from SupaPoolManager Initialize events
+                    {poolsLoading ? ' (loading…)' : ` (${pools.length})`}.
                   </p>
                 </div>
 
@@ -310,7 +254,30 @@ export function App() {
                 </PermissionGuard>
               </div>
 
-              {/* Pool Audit Table */}
+              <PermissionGuard permission="admin.hooks.whitelist" disableInsteadOfHide={true}>
+                <div className="p-4 rounded-2xl bg-surface-theme border border-hairline-theme space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-secondary-theme">
+                      Plugin Whitelist
+                    </span>
+                    <Badge variant={lvrWhitelisted ? 'success' : 'warning'}>
+                      LVR {lvrWhitelisted ? 'Whitelisted' : 'Not Listed'}
+                    </Badge>
+                  </div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={whitelistInput}
+                      onChange={(e) => setWhitelistInput(e.target.value)}
+                      placeholder="0x plugin address"
+                      className="font-mono text-xs"
+                    />
+                    <Button variant="outline" size="sm" onClick={() => void handleWhitelistPlugin()}>
+                      Whitelist
+                    </Button>
+                  </div>
+                </div>
+              </PermissionGuard>
+
               <AuditTable
                 columns={poolColumns}
                 data={pools}
@@ -323,51 +290,45 @@ export function App() {
               />
             </div>
           ) : (
-
-            /* Overview Tab */
             <div className="space-y-6">
-              {/* Top High-Density Metric Readouts */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard
                   label="Total Value Locked"
-                  value="$50.81M"
+                  value={totalTvl > 0 ? formatUSD(totalTvl) : '—'}
                   subValue={`across ${pools.length} pools`}
-                  change={{ value: '4.2%', positive: true, period: 'vs yesterday' }}
                   icon={<Coins className="w-4 h-4 text-emerald-500" />}
-                  badgeText="Verified"
+                  badgeText="On-chain"
                   badgeVariant="success"
                 />
                 <StatCard
-                  label="24h Protocol Volume"
-                  value="$14.91M"
-                  subValue="1,842 trades"
-                  change={{ value: '12.8%', positive: true, period: 'vs last 24h' }}
+                  label="Initialized Pools"
+                  value={String(pools.length)}
+                  subValue={poolsLoading ? 'Refreshing…' : 'from Initialize logs'}
                   icon={<Activity className="w-4 h-4 text-blue-500" />}
-                  badgeText="Optimal"
+                  badgeText="Live"
                   badgeVariant="info"
                 />
                 <StatCard
                   label="Circuit Breaker Status"
-                  value={`Tier ${circuitBreakerTier}`}
-                  subValue={circuitBreakerTier === 0 ? 'All Systems Operational' : 'Emergency State Active'}
+                  value={`Tier ${currentTier}`}
+                  subValue={
+                    currentTier === 0 ? 'All Systems Operational' : 'Emergency State Active'
+                  }
                   icon={<Lock className="w-4 h-4 text-amber-500" />}
-                  badgeText={circuitBreakerTier === 0 ? 'Normal' : 'Engaged'}
-                  badgeVariant={circuitBreakerTier === 0 ? 'success' : 'danger'}
+                  badgeText={currentTier === 0 ? 'Normal' : 'Engaged'}
+                  badgeVariant={currentTier === 0 ? 'success' : 'danger'}
                 />
                 <StatCard
-                  label="Dynamic LVR Spread"
-                  value="8.4 bps"
-                  subValue="sigma = 0.42"
-                  change={{ value: '-1.1 bps', positive: false, neutral: true, period: 'decay active' }}
+                  label="Network"
+                  value={chain?.name || APP_CONFIG.network.name}
+                  subValue={`chainId ${chain?.id ?? APP_CONFIG.network.chainId}`}
                   icon={<SlidersHorizontal className="w-4 h-4 text-purple-500" />}
-                  badgeText="Oracle v1"
-                  badgeVariant="default"
+                  badgeText={addresses ? 'Mapped' : 'Missing'}
+                  badgeVariant={addresses ? 'success' : 'danger'}
                 />
               </div>
 
-              {/* Quick Actions & Safety Controls */}
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* System Status & Quick Link */}
                 <div className="p-5 rounded-2xl bg-surface-theme border border-hairline-theme flex flex-col justify-between space-y-4">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -377,42 +338,38 @@ export function App() {
                           Circuit Breaker Control
                         </span>
                       </div>
-                      <Badge variant={circuitBreakerTier === 0 ? 'success' : 'danger'}>
-                        Level {circuitBreakerTier}
+                      <Badge variant={currentTier === 0 ? 'success' : 'danger'}>
+                        Level {currentTier}
                       </Badge>
                     </div>
                     <p className="text-xs text-secondary-theme leading-relaxed">
-                      Multi-tier emergency pause system: Global Vault (Tier 3), Curve Engine (Tier 2), and Pool-level (Tier 1).
+                      Multi-tier emergency pause: Global Vault (Tier 3), Curve Engine (Tier 2),
+                      Pool-level (Tier 1).
                     </p>
                   </div>
-
-                  <div className="flex items-center gap-2 pt-2 border-t border-hairline-theme">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setActiveTab('circuit-breaker')}
-                      className="w-full gap-1.5 text-xs font-semibold font-mono"
-                    >
-                      <Power className="w-3.5 h-3.5" />
-                      <span>Open Control Center</span>
-                    </Button>
-                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setActiveTab('circuit-breaker')}
+                    className="w-full gap-1.5 text-xs font-semibold font-mono"
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>Open Control Center</span>
+                  </Button>
                 </div>
 
-                {/* Parameter Diff Preview */}
                 <div className="lg:col-span-2">
                   <DiffViewer
-                    label="LVR Volatility Decay Constant"
-                    description="Pending governance calibration for high-volatility market conditions."
-                    previousValue="0.00045"
-                    nextValue="0.00075"
-                    unit="lambda/sec"
+                    label="Deployment Source"
+                    description="Addresses loaded from contracts/addresses.ts (Anvil 31337) with optional VITE_* overrides."
+                    previousValue="Mock APP_CONFIG"
+                    nextValue={shortenAddress(addrs?.poolManager || '0x0', 6)}
+                    unit="poolManager"
                     isDestructive={false}
                   />
                 </div>
               </div>
 
-              {/* Live Registry & Telemetry Data Table */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -437,7 +394,6 @@ export function App() {
                         <span>Initialize New Pool</span>
                       </Button>
                     </PermissionGuard>
-
                   </div>
                 </div>
 
@@ -453,35 +409,23 @@ export function App() {
                 />
               </div>
 
-              {/* Raw State / Contract State Inspector */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wider text-secondary-theme">
-                    On-Chain Contract State & Slot0 Telemetry
+                    On-Chain Contract Addresses
                   </span>
                   <span className="text-xs font-mono text-secondary-theme">
-                    Manager: {shortenAddress(APP_CONFIG.contracts.supaPoolManager, 6)}
+                    Manager: {shortenAddress(addrs?.poolManager || '0x0', 6)}
                   </span>
                 </div>
 
                 <JSONInspector
-                  title="SupaPoolManager Slot0 & Circuit Breaker State"
+                  title="SupaDex Protocol Deployment Map"
                   data={{
-                    manager: APP_CONFIG.contracts.supaPoolManager,
-                    vault: APP_CONFIG.contracts.supaVault,
-                    activeCircuitBreakerTier: circuitBreakerTier,
+                    chainId: chain?.id ?? 31337,
+                    ...addrs,
+                    activeCircuitBreakerTier: currentTier,
                     poolsCount: pools.length,
-                    oracleConfig: {
-                      volatilityAlpha: 840,
-                      decayRate: 4200,
-                      minSpreadBps: 5,
-                      maxSpreadBps: 250,
-                    },
-                    governance: {
-                      timelockDurationSeconds: 86400,
-                      owner: APP_CONFIG.roles.OWNER,
-                      guardian: APP_CONFIG.roles.GUARDIAN,
-                    },
                   }}
                 />
               </div>
@@ -490,30 +434,16 @@ export function App() {
         </main>
       </div>
 
-      {/* Two-Step Administrative Action Confirmation Modal */}
       <ConfirmModal
         isOpen={isConfirmModalOpen}
         onClose={() => setIsConfirmModalOpen(false)}
-        onConfirm={() => {
-          setCircuitBreakerTier(1);
-          setIsConfirmModalOpen(false);
-        }}
-        title="Escalate Circuit Breaker to Tier 1"
-        description="This action will instantly halt all pool swaps across the protocol. Only liquidity withdrawals and claims will be permitted."
-        confirmText="Engage Circuit Breaker"
+        onConfirm={() => setIsConfirmModalOpen(false)}
+        title="Escalate Circuit Breaker"
+        description="Use the Circuit Breaker control center for live pause actions."
+        confirmText="Close"
         variant="danger"
-        requireTypedConfirmation={true}
-        confirmationKeyword="HALT-SWAPS"
-      >
-        <DiffViewer
-          label="Circuit Breaker Status"
-          previousValue={`Tier ${circuitBreakerTier} (Normal)`}
-          nextValue="Tier 1 (Swaps Halted)"
-          isDestructive={true}
-        />
-      </ConfirmModal>
+      />
 
-      {/* Account & Privileges Modal */}
       <AccountDetailsModal
         isOpen={isAccountModalOpen}
         onClose={() => setIsAccountModalOpen(false)}
@@ -523,5 +453,3 @@ export function App() {
 }
 
 export default App;
-
-

@@ -9,7 +9,7 @@ interface SimulationTxPreviewModalProps {
   onClose: () => void;
   draft: PoolLVRConfig;
   current: PoolLVRConfig;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
 }
 
 export const SimulationTxPreviewModal: React.FC<SimulationTxPreviewModalProps> = ({
@@ -21,18 +21,28 @@ export const SimulationTxPreviewModal: React.FC<SimulationTxPreviewModalProps> =
 }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txSuccess, setTxSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    setError(null);
+    try {
+      await onConfirm();
       setTxSuccess(true);
       setTimeout(() => {
-        onConfirm();
         setTxSuccess(false);
         onClose();
       }, 1200);
-    }, 1500);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Transaction failed';
+      if (/user rejected|user denied/i.test(msg)) {
+        setError(null);
+        return;
+      }
+      setError(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -123,20 +133,23 @@ export const SimulationTxPreviewModal: React.FC<SimulationTxPreviewModalProps> =
           </div>
 
           <JSONInspector
-            title="LVRShieldPlugin.setDecayParameters(PoolKey, Config)"
+            title="LVRShieldPlugin.setDecayParameters(PoolKey,uint32,uint24,uint24,uint24)"
             data={{
-              pluginTarget: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
-              method: 'setDecayParameters((address,address,uint24,int24,address,uint8),uint32,uint24,uint24)',
-              params: {
-                poolId: draft.poolId,
-                decayHalfLife: draft.decayHalfLifeSeconds,
-                volatilityAlpha: draft.volatilityAlpha,
-                maxFeeCap: draft.maxFeeBps,
-              },
-              calldataPreview: '0x7e81b30a000000000000000000000000...0000000c00000032',
+              pluginTarget: draft.plugin,
+              method:
+                'setDecayParameters((address,address,uint24,int24,address,uint8),uint32,uint24,uint24,uint24)',
+              poolId: draft.poolId,
+              decayHalfLife: draft.decayHalfLifeSeconds,
+              volatilityAlpha: draft.volatilityAlpha,
+              minFeeBps: draft.minFeeBps,
+              maxFeeBps: draft.maxFeeBps,
             }}
           />
         </div>
+
+        {error && (
+          <p className="text-xs text-red-500 font-mono">{error}</p>
+        )}
 
         {/* Action Buttons */}
         <div className="flex items-center justify-end gap-3 pt-3 border-t border-hairline-theme">

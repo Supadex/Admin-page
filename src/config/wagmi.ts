@@ -1,5 +1,5 @@
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
-import { mainnet, sepolia, arbitrum, base, localhost } from '@reown/appkit/networks';
+import { mainnet, sepolia, arbitrum, base, anvil } from '@reown/appkit/networks';
 import type { AppKitNetwork } from '@reown/appkit/networks';
 import { cookieStorage, createStorage, http } from 'wagmi';
 
@@ -20,7 +20,7 @@ export const networks: [AppKitNetwork, ...AppKitNetwork[]] = [
   mainnet,
   arbitrum,
   base,
-  localhost,
+  anvil,
 ];
 
 // Set up Wagmi Adapter
@@ -36,7 +36,7 @@ export const wagmiAdapter = new WagmiAdapter({
     [mainnet.id]: http(),
     [arbitrum.id]: http(),
     [base.id]: http(),
-    [localhost.id]: http('http://127.0.0.1:8545'),
+    [anvil.id]: http('http://127.0.0.1:8545'),
   },
 });
 

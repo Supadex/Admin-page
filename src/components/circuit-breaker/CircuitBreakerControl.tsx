@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useCircuitBreaker } from '../../hooks/useCircuitBreaker';
+import { isUserRejectedError, useCircuitBreaker } from '../../hooks/useCircuitBreaker';
 import { useAdminAuth } from '../../hooks/useAdminAuth';
 import { CurveIsolationCards } from './CurveIsolationCards';
 import { PoolEmergencyTable, type PoolEmergencyItem } from './PoolEmergencyTable';
@@ -23,6 +23,7 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
   const {
     state,
     currentTier,
+    minDelaySeconds,
     isSubmitting,
     canTriggerPause,
     canManageTimelock,
@@ -43,15 +44,26 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
     curveType?: 0 | 1 | 2;
   } | null>(null);
 
+  const runSafe = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (err) {
+      if (isUserRejectedError(err)) return;
+      throw err;
+    }
+  };
+
   const handleConfirmExecute = async () => {
     if (!confirmAction) return;
-    if (confirmAction.type === 'PAUSE_VAULT') {
-      await pauseVault();
-    } else if (confirmAction.type === 'PAUSE_CURVE' && confirmAction.curveType !== undefined) {
-      await pauseCurve(confirmAction.curveType);
-    } else if (confirmAction.type === 'PAUSE_POOL' && confirmAction.targetId) {
-      await togglePoolPause(confirmAction.targetId, false, address || '0x0000...0000');
-    }
+    await runSafe(async () => {
+      if (confirmAction.type === 'PAUSE_VAULT') {
+        await pauseVault();
+      } else if (confirmAction.type === 'PAUSE_CURVE' && confirmAction.curveType !== undefined) {
+        await pauseCurve(confirmAction.curveType);
+      } else if (confirmAction.type === 'PAUSE_POOL' && confirmAction.targetId) {
+        await togglePoolPause(confirmAction.targetId, false, address || '0x0000...0000');
+      }
+    });
     setConfirmAction(null);
   };
 
@@ -102,8 +114,8 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
         <StatCard
           label="Timelock Governance Queue"
           value={`${state.timelockQueue.filter((q) => !q.executed && !q.canceled).length} Actions`}
-          subValue="24h Delay Required to Unpause"
-          icon={<Clock className="w-4 h-4 text-purple-500" />}
+          subValue={`${Math.round(minDelaySeconds / 3600)}h delay · Anvil auto-warps on unpause`}
+          icon={<Clock className="w-4 h-4 text-neutral-500" />}
           badgeText="SupaTimelock"
           badgeVariant="default"
         />
@@ -139,7 +151,9 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
                 variant="outline"
                 size="md"
                 disabled={!canManageTimelock || isSubmitting}
-                onClick={() => requestUnpauseVault(address || '0x0000...0000')}
+                onClick={() =>
+                  void runSafe(() => requestUnpauseVault(address || '0x0000...0000'))
+                }
                 className="gap-2 text-xs font-mono"
               >
                 <Clock className="w-4 h-4 text-amber-500" />
@@ -168,6 +182,11 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
       {/* Tier 2: Curve Engine Isolation Matrix */}
       <CurveIsolationCards
         isCurvePaused={state.isCurvePaused}
+        pools={pools.map((p) => ({
+          curveType: p.curveType,
+          tvlUSD: p.tvlUSD,
+          volume24h: p.volume24h,
+        }))}
         onPauseCurve={(curveType) =>
           setConfirmAction({
             type: 'PAUSE_CURVE',
@@ -175,7 +194,7 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
           })
         }
         onRequestUnpause={(curveType) =>
-          requestUnpauseCurve(curveType, address || '0x0000...0000')
+          void runSafe(() => requestUnpauseCurve(curveType, address || '0x0000...0000'))
         }
         canTriggerPause={canTriggerPause}
         canManageTimelock={canManageTimelock}
@@ -193,7 +212,7 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
               targetId: poolId,
             });
           } else {
-            togglePoolPause(poolId, true, address || '0x0000...0000');
+            void runSafe(() => togglePoolPause(poolId, true, address || '0x0000...0000'));
           }
         }}
         canTriggerPause={canTriggerPause}
@@ -204,10 +223,12 @@ export const CircuitBreakerControl: React.FC<CircuitBreakerControlProps> = ({ po
       {/* Timelocked Unpause Queue */}
       <TimelockQueueMonitor
         queue={state.timelockQueue}
-        onExecute={executeTimelockAction}
-        onCancel={cancelTimelockAction}
+        onExecute={(id) => void runSafe(() => executeTimelockAction(id))}
+        onCancel={(id) => void runSafe(() => cancelTimelockAction(id))}
         canExecute={canManageTimelock}
         isSubmitting={isSubmitting}
+        minDelaySeconds={minDelaySeconds}
+        isAnvil
       />
 
       {/* Two-Step Verification Confirmation Modal for Emergency Triggers */}

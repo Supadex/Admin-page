@@ -1,62 +1,79 @@
-import { useState, useMemo } from 'react';
-import { useAccount, useDisconnect } from 'wagmi';
+import { useMemo } from 'react';
+import { useAccount, useDisconnect, useReadContract } from 'wagmi';
 import type { AdminRole, RoleDefinition } from '../config/roles';
 import { ROLE_DEFINITIONS } from '../config/roles';
-import { APP_CONFIG } from '../utils/constants';
+import { getAddressesForChain } from '../contracts/addresses';
+import { CircuitBreakerABI, SupaRolesABI, SupaTimelockABI } from '../contracts/abis';
 
 export function useAdminAuth() {
   const { address, isConnected, chain } = useAccount();
   const { disconnect } = useDisconnect();
+  const addrs = getAddressesForChain(chain?.id);
 
-  // Simulated role override: null by default so live connected wallet takes full control
-  const [simulatedRole, setSimulatedRole] = useState<AdminRole | null>(null);
+  const { data: isGuardian } = useReadContract({
+    address: addrs?.circuitBreaker,
+    abi: CircuitBreakerABI,
+    functionName: 'isGuardian',
+    args: address ? [address] : undefined,
+    query: { enabled: !!addrs?.circuitBreaker && !!address },
+  });
 
-  // Determine actual on-chain role based on connected address
+  const { data: isOperatorOnChain } = useReadContract({
+    address: addrs?.roles,
+    abi: SupaRolesABI,
+    functionName: 'isOperator',
+    args: address ? [address] : undefined,
+    query: { enabled: !!addrs?.roles && !!address },
+  });
+
+  const { data: isTimelockProposer } = useReadContract({
+    address: addrs?.timelock,
+    abi: SupaTimelockABI,
+    functionName: 'isProposer',
+    args: address ? [address] : undefined,
+    query: { enabled: !!addrs?.timelock && !!address },
+  });
+
+  const { data: isTimelockAdmin } = useReadContract({
+    address: addrs?.timelock,
+    abi: SupaTimelockABI,
+    functionName: 'admin',
+    query: { enabled: !!addrs?.timelock },
+  });
+
   const onChainRole = useMemo<AdminRole>(() => {
-    if (!address) return 'VIEWER';
-    const cleanAddr = address.toLowerCase();
-    
-    if (cleanAddr === APP_CONFIG.roles.OWNER.toLowerCase()) return 'OWNER';
-    if (cleanAddr === APP_CONFIG.roles.GUARDIAN.toLowerCase()) return 'GUARDIAN';
-    if (cleanAddr === APP_CONFIG.roles.OPERATOR.toLowerCase()) return 'OPERATOR';
-    
+    if (!address || !isConnected) return 'VIEWER';
+    const isOwnerActor =
+      !!isTimelockProposer ||
+      (!!isTimelockAdmin && address.toLowerCase() === (isTimelockAdmin as string).toLowerCase());
+    if (isOwnerActor) return 'OWNER';
+    if (isGuardian) return 'GUARDIAN';
+    if (isOperatorOnChain) return 'OPERATOR';
     return 'VIEWER';
-  }, [address]);
+  }, [address, isConnected, isGuardian, isOperatorOnChain, isTimelockProposer, isTimelockAdmin]);
 
-  // Active role uses simulatedRole if selected, otherwise onChainRole if wallet is connected
-  const activeRole: AdminRole = useMemo(() => {
-    if (simulatedRole) return simulatedRole;
-    if (isConnected && address) return onChainRole;
-    return 'VIEWER';
-  }, [simulatedRole, isConnected, address, onChainRole]);
-
-  const activeRoleDef: RoleDefinition = useMemo(() => {
-    return ROLE_DEFINITIONS[activeRole];
-  }, [activeRole]);
+  const activeRoleDef: RoleDefinition = ROLE_DEFINITIONS[onChainRole];
 
   const hasPermission = (permission: string): boolean => {
     return activeRoleDef.permissions.includes(permission);
   };
 
-  const isOwner = activeRole === 'OWNER';
-  const isGuardian = activeRole === 'GUARDIAN' || activeRole === 'OWNER';
-  const isOperator = activeRole === 'OPERATOR' || activeRole === 'OWNER';
-
-  const effectiveAddress = address || (simulatedRole ? (APP_CONFIG.roles[simulatedRole as keyof typeof APP_CONFIG.roles] || undefined) : undefined);
-  const effectiveIsConnected = isConnected || simulatedRole !== null;
-
   return {
-    address: effectiveAddress,
-    isConnected: effectiveIsConnected,
+    address,
+    isConnected,
     chain,
-    activeRole,
+    activeRole: onChainRole,
     activeRoleDef,
-    simulatedRole,
-    setSimulatedRole,
+    simulatedRole: null as AdminRole | null,
+    setSimulatedRole: (_role: AdminRole | null) => {
+      /* simulation disabled for production wiring — keep API for AccountDetailsModal */
+    },
     hasPermission,
-    isOwner,
-    isGuardian,
-    isOperator,
+    isOwner: onChainRole === 'OWNER',
+    isGuardian: onChainRole === 'GUARDIAN' || onChainRole === 'OWNER',
+    isOperator: onChainRole === 'OPERATOR' || onChainRole === 'OWNER',
     disconnect,
+    addresses: addrs,
+    isProtocolDeployed: !!addrs,
   };
 }

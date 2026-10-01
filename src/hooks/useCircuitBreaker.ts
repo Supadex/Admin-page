@@ -1,219 +1,433 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { encodeFunctionData, padHex, toHex, zeroHash, type Hex } from 'viem';
+import {
+  useAccount,
+  useReadContract,
+  useWriteContract,
+  useWaitForTransactionReceipt,
+  usePublicClient,
+} from 'wagmi';
 import { useAdminAuth } from './useAdminAuth';
+import { getAddressesForChain } from '../contracts/addresses';
+import { CircuitBreakerABI, SupaTimelockABI } from '../contracts/abis';
+import { useAdminPools } from './useAdminPools';
+
+/** True when the wallet rejected / dismissed the signature prompt. */
+export function isUserRejectedError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { name?: string; shortMessage?: string; message?: string; cause?: unknown };
+  if (e.name === 'UserRejectedRequestError') return true;
+  const msg = `${e.shortMessage ?? ''} ${e.message ?? ''}`.toLowerCase();
+  if (msg.includes('user rejected') || msg.includes('user denied')) return true;
+  return isUserRejectedError(e.cause);
+}
+
+function nextSalt(): Hex {
+  return padHex(toHex(Date.now()), { size: 32 });
+}
 
 export interface TimelockAction {
-  id: string;
+  id: Hex;
   target: 'VAULT' | 'CURVE' | 'POOL';
   targetIdentifier: string;
   action: 'UNPAUSE';
   proposer: string;
-  eta: number; // Unix timestamp
+  eta: number;
   executed: boolean;
   canceled: boolean;
+  callData: Hex;
+  salt: Hex;
 }
 
 export interface CircuitBreakerState {
   isVaultPaused: boolean;
-  isCurvePaused: {
-    clamm: boolean;      // curveType 0
-    binAmm: boolean;     // curveType 1
-    stableAmm: boolean;  // curveType 2
-  };
-  pausedPools: Record<string, boolean>; // poolId -> isPaused
+  isCurvePaused: { clamm: boolean; binAmm: boolean; stableAmm: boolean };
+  pausedPools: Record<string, boolean>;
   timelockQueue: TimelockAction[];
 }
 
-const INITIAL_STATE: CircuitBreakerState = {
-  isVaultPaused: false,
-  isCurvePaused: {
-    clamm: false,
-    binAmm: false,
-    stableAmm: false,
-  },
-  pausedPools: {
-    '0x99dd...01cc': true, // ARB / ETH mock paused
-  },
-  timelockQueue: [
-    {
-      id: 'TL-0x892a',
-      target: 'POOL',
-      targetIdentifier: '0x99dd...01cc (ARB / ETH)',
-      action: 'UNPAUSE',
-      proposer: '0x0000...0001 (Owner Timelock)',
-      eta: Date.now() + 1000 * 60 * 60 * 14, // 14 hours from now
-      executed: false,
-      canceled: false,
-    },
-  ],
-};
-
 export function useCircuitBreaker() {
-  const [state, setState] = useState<CircuitBreakerState>(INITIAL_STATE);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { address, chain } = useAccount();
   const { hasPermission } = useAdminAuth();
+  const addrs = getAddressesForChain(chain?.id ?? 31337);
+  const { pools, refetch: refetchPools } = useAdminPools();
+  const publicClient = usePublicClient({ chainId: chain?.id });
+  const { writeContractAsync, data: txHash, isPending } = useWriteContract();
+  const { isLoading: isConfirming } = useWaitForTransactionReceipt({ hash: txHash });
+  const [queue, setQueue] = useState<TimelockAction[]>([]);
+  const [pausedPools, setPausedPools] = useState<Record<string, boolean>>({});
 
-  // Tier calculation:
-  // Tier 0 = All operational
-  // Tier 1 = Specific Pool(s) isolated
-  // Tier 2 = Specific Curve Engine isolated
-  // Tier 3 = Global Vault Paused
+  const { data: isVaultPaused, refetch: refetchVault } = useReadContract({
+    address: addrs?.circuitBreaker,
+    abi: CircuitBreakerABI,
+    functionName: 'isVaultPaused',
+    query: { enabled: !!addrs?.circuitBreaker },
+  });
+
+  const { data: clammPaused, refetch: refetchClamm } = useReadContract({
+    address: addrs?.circuitBreaker,
+    abi: CircuitBreakerABI,
+    functionName: 'isCurvePaused',
+    args: [0],
+    query: { enabled: !!addrs?.circuitBreaker },
+  });
+
+  const { data: binPaused, refetch: refetchBin } = useReadContract({
+    address: addrs?.circuitBreaker,
+    abi: CircuitBreakerABI,
+    functionName: 'isCurvePaused',
+    args: [1],
+    query: { enabled: !!addrs?.circuitBreaker },
+  });
+
+  const { data: stablePaused, refetch: refetchStable } = useReadContract({
+    address: addrs?.circuitBreaker,
+    abi: CircuitBreakerABI,
+    functionName: 'isCurvePaused',
+    args: [2],
+    query: { enabled: !!addrs?.circuitBreaker },
+  });
+
+  const { data: minDelay } = useReadContract({
+    address: addrs?.timelock,
+    abi: SupaTimelockABI,
+    functionName: 'minDelay',
+    query: { enabled: !!addrs?.timelock },
+  });
+
+  const refreshPoolPauses = useCallback(async () => {
+    if (!publicClient || !addrs?.circuitBreaker || pools.length === 0) return;
+    const entries = await Promise.all(
+      pools.map(async (p) => {
+        try {
+          const paused = await publicClient.readContract({
+            address: addrs.circuitBreaker,
+            abi: CircuitBreakerABI,
+            functionName: 'isPoolPaused',
+            args: [p.id],
+          });
+          return [p.id, !!paused] as const;
+        } catch {
+          return [p.id, false] as const;
+        }
+      })
+    );
+    setPausedPools(Object.fromEntries(entries));
+  }, [publicClient, addrs?.circuitBreaker, pools]);
+
+  useEffect(() => {
+    void refreshPoolPauses();
+  }, [refreshPoolPauses]);
+
+  const refetchAll = useCallback(async () => {
+    await Promise.all([
+      refetchVault(),
+      refetchClamm(),
+      refetchBin(),
+      refetchStable(),
+      refreshPoolPauses(),
+      refetchPools(),
+    ]);
+  }, [refetchVault, refetchClamm, refetchBin, refetchStable, refreshPoolPauses, refetchPools]);
+
+  const state: CircuitBreakerState = useMemo(
+    () => ({
+      isVaultPaused: !!isVaultPaused,
+      isCurvePaused: {
+        clamm: !!clammPaused,
+        binAmm: !!binPaused,
+        stableAmm: !!stablePaused,
+      },
+      pausedPools,
+      timelockQueue: queue,
+    }),
+    [isVaultPaused, clammPaused, binPaused, stablePaused, pausedPools, queue]
+  );
+
   const currentTier = state.isVaultPaused
     ? 3
     : state.isCurvePaused.clamm || state.isCurvePaused.binAmm || state.isCurvePaused.stableAmm
-    ? 2
-    : Object.values(state.pausedPools).some((p) => p)
-    ? 1
-    : 0;
+      ? 2
+      : Object.values(state.pausedPools).some(Boolean)
+        ? 1
+        : 0;
 
   const pauseVault = useCallback(async () => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 600));
-    setState((prev) => ({ ...prev, isVaultPaused: true }));
-    setIsSubmitting(false);
-  }, []);
-
-  const requestUnpauseVault = useCallback(async (proposer: string) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 600));
-    const newAction: TimelockAction = {
-      id: `TL-0x${Math.random().toString(16).substring(2, 6)}`,
-      target: 'VAULT',
-      targetIdentifier: 'Global Vault & AMM Gateway',
-      action: 'UNPAUSE',
-      proposer,
-      eta: Date.now() + 1000 * 60 * 60 * 24, // 24h timelock
-      executed: false,
-      canceled: false,
-    };
-    setState((prev) => ({
-      ...prev,
-      timelockQueue: [newAction, ...prev.timelockQueue],
-    }));
-    setIsSubmitting(false);
-  }, []);
-
-  const pauseCurve = useCallback(async (curveType: 0 | 1 | 2) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 500));
-    setState((prev) => {
-      const key = curveType === 0 ? 'clamm' : curveType === 1 ? 'binAmm' : 'stableAmm';
-      return {
-        ...prev,
-        isCurvePaused: {
-          ...prev.isCurvePaused,
-          [key]: true,
-        },
-      };
+    if (!addrs?.circuitBreaker) throw new Error('CircuitBreaker not deployed');
+    await writeContractAsync({
+      address: addrs.circuitBreaker,
+      abi: CircuitBreakerABI,
+      functionName: 'pauseVault',
     });
-    setIsSubmitting(false);
-  }, []);
+    await refetchAll();
+  }, [addrs, writeContractAsync, refetchAll]);
 
-  const requestUnpauseCurve = useCallback(async (curveType: 0 | 1 | 2, proposer: string) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 500));
-    const curveName = curveType === 0 ? 'CLAMM (Concentrated)' : curveType === 1 ? 'BinAMM (Bins)' : 'StableAMM (Stableswap)';
-    const newAction: TimelockAction = {
-      id: `TL-0x${Math.random().toString(16).substring(2, 6)}`,
-      target: 'CURVE',
-      targetIdentifier: `${curveName} Engine`,
-      action: 'UNPAUSE',
-      proposer,
-      eta: Date.now() + 1000 * 60 * 60 * 12, // 12h timelock
-      executed: false,
-      canceled: false,
-    };
-    setState((prev) => ({
-      ...prev,
-      timelockQueue: [newAction, ...prev.timelockQueue],
-    }));
-    setIsSubmitting(false);
-  }, []);
+  const pauseCurve = useCallback(
+    async (curveType: 0 | 1 | 2) => {
+      if (!addrs?.circuitBreaker) throw new Error('CircuitBreaker not deployed');
+      await writeContractAsync({
+        address: addrs.circuitBreaker,
+        abi: CircuitBreakerABI,
+        functionName: 'pauseCurve',
+        args: [curveType],
+      });
+      await refetchAll();
+    },
+    [addrs, writeContractAsync, refetchAll]
+  );
 
-  const togglePoolPause = useCallback(async (poolId: string, currentPaused: boolean, proposer: string) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 400));
-    if (!currentPaused) {
-      // Pause immediately (Guardian power)
-      setState((prev) => ({
-        ...prev,
-        pausedPools: {
-          ...prev.pausedPools,
-          [poolId]: true,
+  const togglePoolPause = useCallback(
+    async (poolId: string, currentPaused: boolean, proposer: string) => {
+      if (!addrs?.circuitBreaker || !addrs.timelock) throw new Error('Not deployed');
+      if (!currentPaused) {
+        await writeContractAsync({
+          address: addrs.circuitBreaker,
+          abi: CircuitBreakerABI,
+          functionName: 'pausePool',
+          args: [poolId as Hex],
+        });
+        await refetchAll();
+        return;
+      }
+
+      const predecessor = zeroHash;
+      const callData = encodeFunctionData({
+        abi: CircuitBreakerABI,
+        functionName: 'unpausePool',
+        args: [poolId as Hex],
+      });
+      const salt = nextSalt();
+      const delay = minDelay ?? 86400n;
+      const eta = Date.now() + Number(delay) * 1000;
+
+      await writeContractAsync({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'schedule',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt, delay],
+      });
+      const id = (await publicClient?.readContract({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'hashOperation',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+      })) as Hex;
+      setQueue((prev) => [
+        {
+          id,
+          target: 'POOL',
+          targetIdentifier: poolId,
+          action: 'UNPAUSE',
+          proposer,
+          eta,
+          executed: false,
+          canceled: false,
+          callData,
+          salt,
         },
-      }));
-    } else {
-      // Unpause requires Timelock queue if strict, or direct if Owner
-      const newAction: TimelockAction = {
-        id: `TL-0x${Math.random().toString(16).substring(2, 6)}`,
-        target: 'POOL',
-        targetIdentifier: poolId,
-        action: 'UNPAUSE',
-        proposer,
-        eta: Date.now() + 1000 * 60 * 60 * 6, // 6h timelock
-        executed: false,
-        canceled: false,
-      };
-      setState((prev) => ({
         ...prev,
-        timelockQueue: [newAction, ...prev.timelockQueue],
-      }));
-    }
-    setIsSubmitting(false);
-  }, []);
+      ]);
 
-  const executeTimelockAction = useCallback(async (id: string) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 500));
-    setState((prev) => {
-      const action = prev.timelockQueue.find((a) => a.id === id);
-      if (!action) return prev;
+      // Anvil: warp past minDelay and execute immediately
+      if ((chain?.id ?? 31337) === 31337 && publicClient) {
+        await publicClient.request({
+          method: 'evm_increaseTime',
+          params: [Number(delay) + 1],
+        } as never);
+        await publicClient.request({ method: 'evm_mine', params: [] } as never);
+        await writeContractAsync({
+          address: addrs.timelock,
+          abi: SupaTimelockABI,
+          functionName: 'execute',
+          args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+        });
+        setQueue((prev) => prev.map((a) => (a.id === id ? { ...a, executed: true } : a)));
+        await refetchAll();
+      }
+    },
+    [addrs, writeContractAsync, refetchAll, minDelay, publicClient, chain?.id]
+  );
 
-      let nextVault = prev.isVaultPaused;
-      const nextCurve = { ...prev.isCurvePaused };
-      const nextPools = { ...prev.pausedPools };
+  const requestUnpauseVault = useCallback(
+    async (proposer: string) => {
+      if (!addrs?.circuitBreaker || !addrs.timelock) throw new Error('Not deployed');
+      const predecessor = zeroHash;
+      const callData = encodeFunctionData({
+        abi: CircuitBreakerABI,
+        functionName: 'unpauseVault',
+      });
+      const salt = nextSalt();
+      const delay = minDelay ?? 86400n;
+      const eta = Date.now() + Number(delay) * 1000;
+      await writeContractAsync({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'schedule',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt, delay],
+      });
+      const id = (await publicClient?.readContract({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'hashOperation',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+      })) as Hex;
+      setQueue((prev) => [
+        {
+          id,
+          target: 'VAULT',
+          targetIdentifier: 'Global Vault & AMM Gateway',
+          action: 'UNPAUSE',
+          proposer,
+          eta,
+          executed: false,
+          canceled: false,
+          callData,
+          salt,
+        },
+        ...prev,
+      ]);
 
-      if (action.target === 'VAULT') {
-        nextVault = false;
-      } else if (action.target === 'CURVE') {
-        if (action.targetIdentifier.includes('CLAMM')) nextCurve.clamm = false;
-        if (action.targetIdentifier.includes('BinAMM')) nextCurve.binAmm = false;
-        if (action.targetIdentifier.includes('StableAMM')) nextCurve.stableAmm = false;
-      } else if (action.target === 'POOL') {
-        const poolKey = Object.keys(nextPools).find((k) => action.targetIdentifier.includes(k));
-        if (poolKey) {
-          nextPools[poolKey] = false;
+      // Anvil: skip 24h wait
+      if ((chain?.id ?? 31337) === 31337 && publicClient) {
+        await publicClient.request({
+          method: 'evm_increaseTime',
+          params: [Number(delay) + 1],
+        } as never);
+        await publicClient.request({ method: 'evm_mine', params: [] } as never);
+        await writeContractAsync({
+          address: addrs.timelock,
+          abi: SupaTimelockABI,
+          functionName: 'execute',
+          args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+        });
+        setQueue((prev) => prev.map((a) => (a.id === id ? { ...a, executed: true } : a)));
+        await refetchAll();
+      }
+    },
+    [addrs, writeContractAsync, minDelay, publicClient, chain?.id, refetchAll]
+  );
+
+  const requestUnpauseCurve = useCallback(
+    async (curveType: 0 | 1 | 2, proposer: string) => {
+      if (!addrs?.circuitBreaker || !addrs.timelock) throw new Error('Not deployed');
+      const predecessor = zeroHash;
+      const callData = encodeFunctionData({
+        abi: CircuitBreakerABI,
+        functionName: 'unpauseCurve',
+        args: [curveType],
+      });
+      const salt = nextSalt();
+      const delay = minDelay ?? 86400n;
+      const eta = Date.now() + Number(delay) * 1000;
+      const curveName =
+        curveType === 0
+          ? 'CLAMM (Concentrated)'
+          : curveType === 1
+            ? 'BinAMM (Bins)'
+            : 'StableAMM (Stableswap)';
+      await writeContractAsync({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'schedule',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt, delay],
+      });
+      const id = (await publicClient?.readContract({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'hashOperation',
+        args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+      })) as Hex;
+      setQueue((prev) => [
+        {
+          id,
+          target: 'CURVE',
+          targetIdentifier: `${curveName} Engine`,
+          action: 'UNPAUSE',
+          proposer,
+          eta,
+          executed: false,
+          canceled: false,
+          callData,
+          salt,
+        },
+        ...prev,
+      ]);
+
+      // Anvil: warp past minDelay and execute immediately so local unpause works
+      if ((chain?.id ?? 31337) === 31337 && publicClient) {
+        await publicClient.request({
+          method: 'evm_increaseTime',
+          params: [Number(delay) + 1],
+        } as never);
+        await publicClient.request({ method: 'evm_mine', params: [] } as never);
+        await writeContractAsync({
+          address: addrs.timelock,
+          abi: SupaTimelockABI,
+          functionName: 'execute',
+          args: [addrs.circuitBreaker, 0n, callData, predecessor, salt],
+        });
+        setQueue((prev) => prev.map((a) => (a.id === id ? { ...a, executed: true } : a)));
+        await refetchAll();
+      }
+    },
+    [addrs, writeContractAsync, minDelay, publicClient, chain?.id, refetchAll]
+  );
+
+  const executeTimelockAction = useCallback(
+    async (id: string) => {
+      if (!addrs?.timelock || !addrs.circuitBreaker || !publicClient) {
+        throw new Error('Not deployed');
+      }
+      const action = queue.find((a) => a.id === id);
+      if (!action) return;
+
+      // Anvil/local: warp past remaining delay so Execute is usable without waiting 24h
+      const chainId = chain?.id ?? 31337;
+      if (chainId === 31337) {
+        const remainingSec = Math.max(0, Math.ceil((action.eta - Date.now()) / 1000));
+        if (remainingSec > 0) {
+          await publicClient.request({
+            method: 'evm_increaseTime' as 'eth_chainId',
+            params: [remainingSec + 1] as never,
+          });
+          await publicClient.request({
+            method: 'evm_mine' as 'eth_chainId',
+            params: [] as never,
+          });
         }
       }
 
-      return {
-        ...prev,
-        isVaultPaused: nextVault,
-        isCurvePaused: nextCurve,
-        pausedPools: nextPools,
-        timelockQueue: prev.timelockQueue.map((a) =>
-          a.id === id ? { ...a, executed: true } : a
-        ),
-      };
-    });
-    setIsSubmitting(false);
-  }, []);
+      await writeContractAsync({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'execute',
+        args: [addrs.circuitBreaker, 0n, action.callData, zeroHash, action.salt],
+      });
+      setQueue((prev) => prev.map((a) => (a.id === id ? { ...a, executed: true } : a)));
+      await refetchAll();
+    },
+    [addrs, queue, writeContractAsync, refetchAll, publicClient, chain?.id]
+  );
 
-  const cancelTimelockAction = useCallback(async (id: string) => {
-    setIsSubmitting(true);
-    await new Promise((r) => setTimeout(r, 400));
-    setState((prev) => ({
-      ...prev,
-      timelockQueue: prev.timelockQueue.map((a) =>
-        a.id === id ? { ...a, canceled: true } : a
-      ),
-    }));
-    setIsSubmitting(false);
-  }, []);
+  const cancelTimelockAction = useCallback(
+    async (id: string) => {
+      if (!addrs?.timelock) throw new Error('Not deployed');
+      await writeContractAsync({
+        address: addrs.timelock,
+        abi: SupaTimelockABI,
+        functionName: 'cancel',
+        args: [id as Hex],
+      });
+      setQueue((prev) => prev.map((a) => (a.id === id ? { ...a, canceled: true } : a)));
+    },
+    [addrs, writeContractAsync]
+  );
 
   return {
     state,
     currentTier,
-    isSubmitting,
+    minDelaySeconds: Number(minDelay ?? 86400n),
+    isSubmitting: isPending || isConfirming,
     canTriggerPause: hasPermission('admin.circuit_breaker.trigger'),
     canManageTimelock: hasPermission('admin.circuit_breaker.reset'),
     pauseVault,
@@ -223,5 +437,7 @@ export function useCircuitBreaker() {
     togglePoolPause,
     executeTimelockAction,
     cancelTimelockAction,
+    refetchAll,
+    address,
   };
 }

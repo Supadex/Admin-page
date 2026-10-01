@@ -1,12 +1,14 @@
 import React from 'react';
 import { cn } from '../../utils/cn';
 import { ChevronDown } from 'lucide-react';
+import { TokenLogo } from './TokenLogo';
 
 export interface TokenAmountInputProps {
   label?: string;
   value: string;
   onChange: (value: string) => void;
   tokenSymbol?: string;
+  tokenAddress?: string;
   tokenIcon?: React.ReactNode;
   usdValue?: string;
   balance?: string;
@@ -24,6 +26,7 @@ export const TokenAmountInput: React.FC<TokenAmountInputProps> = ({
   value,
   onChange,
   tokenSymbol = 'ETH',
+  tokenAddress,
   tokenIcon,
   usdValue,
   balance,
@@ -55,7 +58,7 @@ export const TokenAmountInput: React.FC<TokenAmountInputProps> = ({
           <div className="flex items-center gap-1.5">
             <span>Balance: {balance}</span>
             {isVaultClaim && (
-              <span className="text-[10px] px-1.5 py-0.2 bg-purple-500/15 text-purple-600 dark:text-purple-400 rounded-md font-mono">
+              <span className="text-[10px] px-1.5 py-0.2 bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 rounded-md font-mono">
                 ERC-6909
               </span>
             )}
@@ -102,7 +105,8 @@ export const TokenAmountInput: React.FC<TokenAmountInputProps> = ({
           disabled={disabled || !onSelectToken}
           className={cn(
             'flex items-center gap-2 shrink-0 px-3 py-1.5 rounded-full font-medium text-sm transition-all',
-            'bg-white dark:bg-[#111317] border border-neutral-200 dark:border-white/[0.1] hover:bg-neutral-50 dark:hover:bg-white/[0.06] text-neutral-900 dark:text-white shadow-sm cursor-pointer'
+            'bg-white dark:bg-[#111317] border border-neutral-200 dark:border-white/[0.1] hover:bg-neutral-50 dark:hover:bg-white/[0.06] text-neutral-900 dark:text-white shadow-sm',
+            onSelectToken ? 'cursor-pointer' : 'cursor-default'
           )}
         >
           {tokenIcon ? (
@@ -110,9 +114,7 @@ export const TokenAmountInput: React.FC<TokenAmountInputProps> = ({
               {tokenIcon}
             </span>
           ) : (
-            <span className="w-6 h-6 rounded-full bg-neutral-200 dark:bg-neutral-800 text-[10px] flex items-center justify-center font-bold text-neutral-700 dark:text-neutral-300 shrink-0">
-              {tokenSymbol.slice(0, 2)}
-            </span>
+            <TokenLogo symbol={tokenSymbol} address={tokenAddress} size="sm" />
           )}
           <span className="font-semibold">{tokenSymbol}</span>
           {onSelectToken && <ChevronDown className="w-4 h-4 text-neutral-400 shrink-0" />}

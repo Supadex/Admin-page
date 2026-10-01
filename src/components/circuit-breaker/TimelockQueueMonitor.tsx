@@ -9,6 +9,8 @@ interface TimelockQueueMonitorProps {
   onCancel: (id: string) => void;
   canExecute: boolean;
   isSubmitting: boolean;
+  minDelaySeconds?: number;
+  isAnvil?: boolean;
 }
 
 export const TimelockQueueMonitor: React.FC<TimelockQueueMonitorProps> = ({
@@ -17,6 +19,8 @@ export const TimelockQueueMonitor: React.FC<TimelockQueueMonitorProps> = ({
   onCancel,
   canExecute,
   isSubmitting,
+  minDelaySeconds = 86400,
+  isAnvil = false,
 }) => {
   const [currentTime, setCurrentTime] = useState(Date.now());
 
@@ -36,11 +40,16 @@ export const TimelockQueueMonitor: React.FC<TimelockQueueMonitorProps> = ({
       .padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`;
   };
 
+  const delayLabel =
+    minDelaySeconds >= 3600
+      ? `${Math.round(minDelaySeconds / 3600)}h Timelock`
+      : `${minDelaySeconds}s Timelock`;
+
   const activeQueue = queue.filter((q) => !q.executed && !q.canceled);
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-secondary-theme" />
           <h3 className="text-xs font-semibold uppercase tracking-wider text-secondary-theme">
@@ -49,7 +58,8 @@ export const TimelockQueueMonitor: React.FC<TimelockQueueMonitorProps> = ({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-secondary-theme">
-            Delay Standard: <span className="text-primary-theme font-semibold">24h Timelock</span>
+            Delay: <span className="text-primary-theme font-semibold">{delayLabel}</span>
+            {isAnvil ? ' · Anvil warps on Execute' : ''}
           </span>
           <Badge variant={activeQueue.length > 0 ? 'warning' : 'default'}>
             {activeQueue.length} Pending

@@ -34,6 +34,21 @@ export const LVRCalibrationConsole: React.FC = () => {
 
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
+  if (!activePool || !draftConfig) {
+    return (
+      <div className="p-8 rounded-2xl bg-surface-theme border border-hairline-theme text-center space-y-2">
+        <div className="inline-flex p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+          <SlidersHorizontal className="w-5 h-5 text-emerald-500" />
+        </div>
+        <h2 className="text-sm font-bold text-primary-theme">No LVR-shielded pools</h2>
+        <p className="text-xs text-secondary-theme max-w-md mx-auto">
+          Initialize a pool with the LVR Shield plugin attached, then return here to calibrate
+          decay, volatility alpha, and oracle cardinality.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Console Top Master HUD */}

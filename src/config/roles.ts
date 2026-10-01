@@ -21,6 +21,8 @@ export const ROLE_DEFINITIONS: Record<AdminRole, RoleDefinition> = {
       'admin.circuit_breaker.reset',
       'admin.oracle.calibrate',
       'admin.fees.sweep',
+      'admin.fee.claim',
+      'admin.governance.propose',
       'admin.hooks.whitelist',
     ],
   },
@@ -42,6 +44,8 @@ export const ROLE_DEFINITIONS: Record<AdminRole, RoleDefinition> = {
     permissions: [
       'admin.oracle.calibrate',
       'admin.pool.create',
+      'admin.fees.sweep',
+      'admin.fee.claim',
     ],
   },
   VIEWER: {

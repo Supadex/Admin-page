@@ -1,5 +1,9 @@
-import { useState, useMemo, useCallback } from 'react';
-import { APP_CONFIG } from '../utils/constants';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAccount, useReadContracts, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { getAddressesForChain } from '../contracts/addresses';
+import { SupaFeeCollectorABI, SupaPoolManagerABI } from '../contracts/abis';
+import { useAdminPools } from './useAdminPools';
+import { zeroAddress, type Address } from 'viem';
 
 export interface PoolFeeRecord {
   id: string;
@@ -14,200 +18,208 @@ export interface PoolFeeRecord {
   token1USDPrice: number;
   is6909Claim: boolean;
   lastSweptTimestamp: number;
+  currency0: Address;
+  currency1: Address;
+  accrued0: bigint;
+  accrued1: bigint;
 }
 
 export interface FeeSplitConfig {
-  daoTreasuryShareBps: number;    // e.g. 6000 = 60%
-  lpStakingShareBps: number;      // e.g. 3000 = 30%
-  insuranceReserveShareBps: number; // e.g. 1000 = 10%
+  daoTreasuryShareBps: number;
+  lpStakingShareBps: number;
+  insuranceReserveShareBps: number;
   targetTreasuryAddress: string;
   targetInsuranceAddress: string;
 }
 
-const INITIAL_POOLS_FEES: PoolFeeRecord[] = [
-  {
-    id: '0x1a8f90ab3c44cddb6a900fa2b585dd299e03d12fa4293bc0000000000000001',
-    pair: 'ETH / USDC',
-    token0Symbol: 'ETH',
-    token1Symbol: 'USDC',
-    curveType: 'CLAMM',
-    feeTier: '0.05%',
-    uncollectedToken0: 12.45,
-    uncollectedToken1: 34120.5,
-    token0USDPrice: 2650,
-    token1USDPrice: 1.0,
-    is6909Claim: false,
-    lastSweptTimestamp: Date.now() - 3600 * 1000 * 36, // 36h ago
-  },
-  {
-    id: '0x4b7c21de90f79bf6eb2c4f870365e785982e1f101e93b9060000000000000002',
-    pair: 'WBTC / ETH',
-    token0Symbol: 'WBTC',
-    token1Symbol: 'ETH',
-    curveType: 'CLAMM',
-    feeTier: '0.30%',
-    uncollectedToken0: 0.84,
-    uncollectedToken1: 8.92,
-    token0USDPrice: 64200,
-    token1USDPrice: 2650,
-    is6909Claim: true,
-    lastSweptTimestamp: Date.now() - 3600 * 1000 * 18, // 18h ago
-  },
-  {
-    id: '0x7e2a55ff15d34aaf54267db7d7c367839aaf71a00a2c6a650000000000000003',
-    pair: 'USDC / USDT',
-    token0Symbol: 'USDC',
-    token1Symbol: 'USDT',
-    curveType: 'StableAMM',
-    feeTier: '0.01%',
-    uncollectedToken0: 42890.0,
-    uncollectedToken1: 41200.0,
-    token0USDPrice: 1.0,
-    token1USDPrice: 1.0,
-    is6909Claim: false,
-    lastSweptTimestamp: Date.now() - 3600 * 1000 * 72, // 3 days ago
-  },
-  {
-    id: '0x99dd01cc9965507d1a55bcc2695c58ba16fb37d819b0a4dc0000000000000004',
-    pair: 'ARB / ETH',
-    token0Symbol: 'ARB',
-    token1Symbol: 'ETH',
-    curveType: 'BinAMM',
-    feeTier: '0.20%',
-    uncollectedToken0: 8940.0,
-    uncollectedToken1: 3.12,
-    token0USDPrice: 0.58,
-    token1USDPrice: 2650,
-    is6909Claim: true,
-    lastSweptTimestamp: Date.now() - 3600 * 1000 * 6, // 6h ago
-  },
-];
-
 export function useFeeTreasury() {
-  const [pools, setPools] = useState<PoolFeeRecord[]>(INITIAL_POOLS_FEES);
+  const { chain } = useAccount();
+  const addrs = getAddressesForChain(chain?.id ?? 31337);
+  const { pools: adminPools } = useAdminPools();
   const [selectedPoolIds, setSelectedPoolIds] = useState<string[]>([]);
-  const [feeSplit, setFeeSplit] = useState<FeeSplitConfig>({
-    daoTreasuryShareBps: 6000,
-    lpStakingShareBps: 3000,
-    insuranceReserveShareBps: 1000,
-    targetTreasuryAddress: APP_CONFIG.contracts.feeCollector,
-    targetInsuranceAddress: '0x976EA74026E726554dB657fA54763abd0C3a0aa9',
-  });
-  const [isSweeping, setIsSweeping] = useState(false);
   const [lastSweptTxHash, setLastSweptTxHash] = useState<string | null>(null);
 
-  // Compute valuations
-  const poolValuations = useMemo(() => {
-    return pools.map((pool) => {
-      const val0 = pool.uncollectedToken0 * pool.token0USDPrice;
-      const val1 = pool.uncollectedToken1 * pool.token1USDPrice;
-      const totalVal = val0 + val1;
+  const { data: splitData, refetch: refetchSplit } = useReadContracts({
+    contracts: addrs?.feeCollector
+      ? [
+          { address: addrs.feeCollector, abi: SupaFeeCollectorABI, functionName: 'daoTreasuryShareBps' },
+          { address: addrs.feeCollector, abi: SupaFeeCollectorABI, functionName: 'lpStakingShareBps' },
+          { address: addrs.feeCollector, abi: SupaFeeCollectorABI, functionName: 'insuranceReserveShareBps' },
+          { address: addrs.feeCollector, abi: SupaFeeCollectorABI, functionName: 'daoTreasury' },
+          { address: addrs.feeCollector, abi: SupaFeeCollectorABI, functionName: 'insuranceReserve' },
+        ]
+      : [],
+    query: { enabled: !!addrs?.feeCollector },
+  });
+
+  const currencies = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of adminPools) {
+      set.add(p.currency0.toLowerCase());
+      set.add(p.currency1.toLowerCase());
+    }
+    return [...set].map((c) => c as Address);
+  }, [adminPools]);
+
+  const { data: accruedReads, refetch: refetchAccrued } = useReadContracts({
+    contracts:
+      addrs?.poolManager && currencies.length
+        ? currencies.map((c) => ({
+            address: addrs.poolManager,
+            abi: SupaPoolManagerABI,
+            functionName: 'protocolFeesAccrued' as const,
+            args: [c] as const,
+          }))
+        : [],
+    query: { enabled: !!addrs?.poolManager && currencies.length > 0 },
+  });
+
+  const accruedByCurrency = useMemo(() => {
+    const map: Record<string, bigint> = {};
+    currencies.forEach((c, i) => {
+      const r = accruedReads?.[i];
+      map[c.toLowerCase()] = r?.status === 'success' ? (r.result as bigint) : 0n;
+    });
+    return map;
+  }, [currencies, accruedReads]);
+
+  const feeSplit: FeeSplitConfig = useMemo(
+    () => ({
+      daoTreasuryShareBps: Number(splitData?.[0]?.result ?? 6000),
+      lpStakingShareBps: Number(splitData?.[1]?.result ?? 3000),
+      insuranceReserveShareBps: Number(splitData?.[2]?.result ?? 1000),
+      targetTreasuryAddress: String(splitData?.[3]?.result ?? addrs?.feeCollector ?? zeroAddress),
+      targetInsuranceAddress: String(splitData?.[4]?.result ?? zeroAddress),
+    }),
+    [splitData, addrs?.feeCollector]
+  );
+
+  const pools: (PoolFeeRecord & { totalUSDValue: number; val0: number; val1: number })[] = useMemo(() => {
+    return adminPools.map((p) => {
+      const accrued0 = accruedByCurrency[p.currency0.toLowerCase()] ?? 0n;
+      const accrued1 = accruedByCurrency[p.currency1.toLowerCase()] ?? 0n;
+      // Display share of currency-level accrual attributed per pool (equal split if shared)
+      const uncollectedToken0 = Number(accrued0) / 1e18;
+      const uncollectedToken1 = Number(accrued1) / 1e6;
+      const val0 = uncollectedToken0 * 0;
+      const val1 = uncollectedToken1 * 1;
       return {
-        ...pool,
-        totalUSDValue: totalVal,
+        id: p.id,
+        pair: p.pair,
+        token0Symbol: p.symbol0,
+        token1Symbol: p.symbol1,
+        curveType: p.curveType,
+        feeTier: p.feeTier,
+        uncollectedToken0,
+        uncollectedToken1,
+        token0USDPrice: 0,
+        token1USDPrice: 1,
+        is6909Claim: false,
+        lastSweptTimestamp: 0,
+        currency0: p.currency0,
+        currency1: p.currency1,
+        accrued0,
+        accrued1,
+        totalUSDValue: val0 + val1,
         val0,
         val1,
       };
     });
-  }, [pools]);
+  }, [adminPools, accruedByCurrency]);
 
   const summary = useMemo(() => {
     let totalAccruedUSD = 0;
-    let physicalErc20USD = 0;
-    let vault6909ClaimsUSD = 0;
-
-    poolValuations.forEach((p) => {
+    pools.forEach((p) => {
       totalAccruedUSD += p.totalUSDValue;
-      if (p.is6909Claim) {
-        vault6909ClaimsUSD += p.totalUSDValue;
-      } else {
-        physicalErc20USD += p.totalUSDValue;
-      }
     });
-
     return {
       totalAccruedUSD,
-      physicalErc20USD,
-      vault6909ClaimsUSD,
-      physicalRatio: totalAccruedUSD > 0 ? (physicalErc20USD / totalAccruedUSD) * 100 : 0,
-      claims6909Ratio: totalAccruedUSD > 0 ? (vault6909ClaimsUSD / totalAccruedUSD) * 100 : 0,
+      physicalErc20USD: totalAccruedUSD,
+      vault6909ClaimsUSD: 0,
+      physicalRatio: 100,
+      claims6909Ratio: 0,
       poolCount: pools.length,
     };
-  }, [poolValuations, pools.length]);
+  }, [pools]);
 
-  // Selected totals for batch sweep
   const selectedSummary = useMemo(() => {
-    const selected = poolValuations.filter((p) => selectedPoolIds.includes(p.id));
-    const totalUSD = selected.reduce((acc, p) => acc + p.totalUSDValue, 0);
-    const count = selected.length;
+    const selected = pools.filter((p) => selectedPoolIds.includes(p.id));
     return {
       selected,
-      totalUSD,
-      count,
+      totalUSD: selected.reduce((acc, p) => acc + p.totalUSDValue, 0),
+      count: selected.length,
     };
-  }, [poolValuations, selectedPoolIds]);
+  }, [pools, selectedPoolIds]);
+
+  const { writeContractAsync, data: txHash, isPending } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
+
+  useEffect(() => {
+    if (isSuccess && txHash) {
+      setLastSweptTxHash(txHash);
+      void refetchAccrued();
+    }
+  }, [isSuccess, txHash, refetchAccrued]);
 
   const toggleSelectPool = useCallback((id: string) => {
-    setSelectedPoolIds((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    );
+    setSelectedPoolIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }, []);
 
   const selectAllPools = useCallback(() => {
-    if (selectedPoolIds.length === pools.length) {
-      setSelectedPoolIds([]);
-    } else {
-      setSelectedPoolIds(pools.map((p) => p.id));
-    }
-  }, [pools, selectedPoolIds.length]);
+    setSelectedPoolIds((prev) => (prev.length === pools.length ? [] : pools.map((p) => p.id)));
+  }, [pools]);
 
-  const updateFeeSplit = useCallback((newSplit: Partial<FeeSplitConfig>) => {
-    setFeeSplit((prev) => ({ ...prev, ...newSplit }));
-  }, []);
+  const updateFeeSplit = useCallback(
+    async (newSplit: Partial<FeeSplitConfig>) => {
+      if (!addrs?.feeCollector) throw new Error('FeeCollector not deployed');
+      const next = { ...feeSplit, ...newSplit };
+      await writeContractAsync({
+        address: addrs.feeCollector,
+        abi: SupaFeeCollectorABI,
+        functionName: 'setFeeSplit',
+        args: [
+          next.daoTreasuryShareBps,
+          next.lpStakingShareBps,
+          next.insuranceReserveShareBps,
+        ],
+      });
+      await refetchSplit();
+    },
+    [addrs, feeSplit, writeContractAsync, refetchSplit]
+  );
 
-  // Simulate Batch Sweep
   const executeBatchSweep = useCallback(
-    async (poolIdsToSweep: string[], recipientOverride?: string) => {
-      setIsSweeping(true);
-      const target = recipientOverride || feeSplit.targetTreasuryAddress;
-
-      // Simulate blockchain execution delay
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-
-      const mockTxHash = `0x${Array.from({ length: 64 }, () =>
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('')}`;
-
-      setPools((prev) =>
-        prev.map((pool) => {
-          if (poolIdsToSweep.includes(pool.id)) {
-            return {
-              ...pool,
-              uncollectedToken0: 0,
-              uncollectedToken1: 0,
-              lastSweptTimestamp: Date.now(),
-            };
-          }
-          return pool;
-        })
-      );
-
+    async (poolIdsToSweep: string[], _recipientOverride?: string) => {
+      if (!addrs?.feeCollector) throw new Error('FeeCollector not deployed');
+      const selected = pools.filter((p) => poolIdsToSweep.includes(p.id));
+      const currencySet = new Set<Address>();
+      selected.forEach((p) => {
+        currencySet.add(p.currency0);
+        currencySet.add(p.currency1);
+      });
+      const currenciesToSweep = [...currencySet];
+      if (currenciesToSweep.length === 0) {
+        return { success: false, txHash: null, sweptCount: 0, recipient: feeSplit.targetTreasuryAddress };
+      }
+      const hash = await writeContractAsync({
+        address: addrs.feeCollector,
+        abi: SupaFeeCollectorABI,
+        functionName: 'sweepProtocolFees',
+        args: [currenciesToSweep, false],
+      });
       setSelectedPoolIds((prev) => prev.filter((id) => !poolIdsToSweep.includes(id)));
-      setIsSweeping(false);
-      setLastSweptTxHash(mockTxHash);
-
       return {
         success: true,
-        txHash: mockTxHash,
+        txHash: hash,
         sweptCount: poolIdsToSweep.length,
-        recipient: target,
+        recipient: feeSplit.targetTreasuryAddress,
       };
     },
-    [feeSplit.targetTreasuryAddress]
+    [addrs, pools, writeContractAsync, feeSplit.targetTreasuryAddress]
   );
 
   return {
-    pools: poolValuations,
+    pools,
     selectedPoolIds,
     toggleSelectPool,
     selectAllPools,
@@ -216,7 +228,8 @@ export function useFeeTreasury() {
     feeSplit,
     updateFeeSplit,
     executeBatchSweep,
-    isSweeping,
+    isSweeping: isPending || isConfirming,
     lastSweptTxHash,
+    isAvailable: !!addrs?.feeCollector,
   };
 }

@@ -87,9 +87,9 @@ export function AuditTable<T extends { id?: string | number }>({
         <table className="w-full text-left text-xs">
           <thead className="bg-elevated-theme/60 border-b border-hairline-theme text-secondary-theme font-mono uppercase text-[10px] tracking-wider">
             <tr>
-              {columns.map((col) => (
+              {columns.map((col, colIdx) => (
                 <th
-                  key={col.key}
+                  key={`${col.key}-${colIdx}`}
                   style={{ width: col.width }}
                   className={cn(
                     'px-4 py-3 font-medium',
@@ -106,16 +106,16 @@ export function AuditTable<T extends { id?: string | number }>({
             {paginatedData.length > 0 ? (
               paginatedData.map((item, idx) => (
                 <tr
-                  key={item.id ? String(item.id) : idx}
+                  key={item.id != null ? `${String(item.id)}-${idx}` : `row-${idx}`}
                   onClick={() => onRowClick?.(item)}
                   className={cn(
                     'hover:bg-subtle-theme transition-colors',
                     onRowClick && 'cursor-pointer'
                   )}
                 >
-                  {columns.map((col) => (
+                  {columns.map((col, colIdx) => (
                     <td
-                      key={col.key}
+                      key={`${col.key}-${colIdx}`}
                       className={cn(
                         'px-4 py-3 text-primary-theme font-mono',
                         col.align === 'right' && 'text-right',
