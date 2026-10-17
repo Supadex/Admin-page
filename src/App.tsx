@@ -26,6 +26,7 @@ import { CircuitBreakerControl } from './components/circuit-breaker';
 import { LVRCalibrationConsole } from './components/lvr-oracle';
 import { TreasuryClaimsConsole } from './components/treasury';
 import { AuditLogsConsole } from './components/audit-logs';
+import { RoleManagementConsole } from './components/roles';
 import { getAddressesForChain } from './contracts/addresses';
 import { PluginWhitelistABI } from './contracts/abis';
 import { useAccount, useWriteContract, useReadContract } from 'wagmi';
@@ -152,6 +153,7 @@ export function App() {
           currentTabName={activeTab.replace('-', ' ')}
           onRefresh={handleRefresh}
           isRefreshing={isRefreshing}
+          onOpenRoles={() => setActiveTab('roles')}
         />
 
         <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
@@ -191,7 +193,9 @@ export function App() {
           </div>
           )}
 
-          {activeTab !== 'create-pool' && !hasPermission('admin.circuit_breaker.trigger') && (
+          {activeTab !== 'create-pool' &&
+            activeTab !== 'roles' &&
+            !hasPermission('admin.circuit_breaker.trigger') && (
             <AccessDeniedBanner
               requiredRole="GUARDIAN or OWNER"
               actionName="halt protocol swaps or escalate circuit breaker"
@@ -215,6 +219,10 @@ export function App() {
             <LVRCalibrationConsole />
           ) : activeTab === 'treasury' ? (
             <TreasuryClaimsConsole />
+          ) : activeTab === 'roles' ? (
+            <RoleManagementConsole
+              onOpenAccountModal={() => setIsAccountModalOpen(true)}
+            />
           ) : activeTab === 'audit-logs' ? (
             <AuditLogsConsole />
           ) : activeTab === 'create-pool' ? (
@@ -447,6 +455,7 @@ export function App() {
       <AccountDetailsModal
         isOpen={isAccountModalOpen}
         onClose={() => setIsAccountModalOpen(false)}
+        onManageRoles={() => setActiveTab('roles')}
       />
     </div>
   );

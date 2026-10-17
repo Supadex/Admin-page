@@ -1,28 +1,27 @@
 import React from 'react';
 import { useAdminAuth } from '../../hooks/useAdminAuth';
-import type { AdminRole } from '../../config/roles';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { RoleBadge } from './RoleBadge';
 import { shortenAddress } from '../../utils/formatters';
-import { KeyRound, ExternalLink, Check, Copy, LogOut, Wallet } from 'lucide-react';
+import { ExternalLink, Check, Copy, LogOut, Wallet, KeyRound } from 'lucide-react';
 import { useAppKit } from '@reown/appkit/react';
 
 interface AccountDetailsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onManageRoles?: () => void;
 }
 
 export const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
   isOpen,
   onClose,
+  onManageRoles,
 }) => {
   const {
     address,
     isConnected,
     activeRole,
-    simulatedRole,
-    setSimulatedRole,
     activeRoleDef,
     disconnect,
   } = useAdminAuth();
@@ -43,19 +42,21 @@ export const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
   };
 
   const handleDisconnect = () => {
-    setSimulatedRole(null);
     disconnect();
     onClose();
   };
 
-  const rolesList: AdminRole[] = ['OWNER', 'GUARDIAN', 'OPERATOR', 'VIEWER'];
+  const handleManageRoles = () => {
+    onClose();
+    onManageRoles?.();
+  };
 
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title="Admin Account & Privileges"
-      description="View connected address credentials, active governance tier, and simulation mode."
+      description="View connected address credentials and the live on-chain governance tier for this wallet."
       maxWidth="lg"
     >
       <div className="space-y-6">
@@ -82,7 +83,7 @@ export const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
                   {address ? shortenAddress(address, 6) : 'Not Connected'}
                 </span>
                 <span className="text-[10px] text-secondary-theme font-mono">
-                  {simulatedRole ? `Simulated Role (${simulatedRole})` : isConnected ? 'Live On-Chain Account' : 'Guest / Disconnected'}
+                  {isConnected ? 'Live On-Chain Account' : 'Guest / Disconnected'}
                 </span>
               </div>
             </div>
@@ -144,43 +145,30 @@ export const AccountDetailsModal: React.FC<AccountDetailsModalProps> = ({
           </div>
         </div>
 
-        {/* Dev Mode Role Simulator */}
+        {/* Roles management CTA */}
         <div className="p-4 rounded-xl border border-hairline-theme bg-surface-theme/50 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <KeyRound className="w-3.5 h-3.5 text-secondary-theme" />
-              <span className="text-xs font-semibold text-primary-theme">
-                Role Testing Switcher (Dev Sandbox)
-              </span>
-            </div>
-            {simulatedRole && (
-              <button
-                onClick={() => setSimulatedRole(null)}
-                className="text-[11px] text-emerald-500 hover:underline cursor-pointer font-medium"
-              >
-                Reset to Live Wallet Role
-              </button>
-            )}
+          <div className="flex items-center gap-1.5">
+            <KeyRound className="w-3.5 h-3.5 text-secondary-theme" />
+            <span className="text-xs font-semibold text-primary-theme">
+              Role Management
+            </span>
           </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {rolesList.map((r) => {
-              const isSelected = activeRole === r;
-              return (
-                <button
-                  key={r}
-                  onClick={() => setSimulatedRole(r)}
-                  className={`px-3 py-2 rounded-xl text-xs font-mono border transition-all text-center cursor-pointer ${
-                    isSelected
-                      ? 'border-emerald-500/50 bg-emerald-500/10 text-primary-theme font-semibold'
-                      : 'border-hairline-theme bg-elevated-theme text-secondary-theme hover:text-primary-theme hover:border-active-theme'
-                  }`}
-                >
-                  {r}
-                </button>
-              );
-            })}
-          </div>
+          <p className="text-xs text-secondary-theme leading-relaxed">
+            Granting or revoking Operator, Guardian, or Owner wallets is done from the Role
+            Management console. This panel only shows the privileges of the wallet you have
+            connected.
+          </p>
+          {onManageRoles && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleManageRoles}
+              className="text-xs gap-1.5 font-mono"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Open Role Management
+            </Button>
+          )}
         </div>
 
         {/* Actions Row */}

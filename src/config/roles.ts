@@ -24,6 +24,7 @@ export const ROLE_DEFINITIONS: Record<AdminRole, RoleDefinition> = {
       'admin.fee.claim',
       'admin.governance.propose',
       'admin.hooks.whitelist',
+      'admin.roles.manage',
     ],
   },
   GUARDIAN: {

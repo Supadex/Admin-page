@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Radio,
+  KeyRound,
 } from 'lucide-react';
 
 export type AdminTab =
@@ -23,6 +24,7 @@ export type AdminTab =
   | 'circuit-breaker'
   | 'lvr-oracle'
   | 'treasury'
+  | 'roles'
   | 'audit-logs';
 
 export interface AdminSidebarProps {
@@ -69,6 +71,11 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({
       id: 'treasury' as AdminTab,
       label: 'Fee Treasury',
       icon: Coins,
+    },
+    {
+      id: 'roles' as AdminTab,
+      label: 'Role Management',
+      icon: KeyRound,
     },
     {
       id: 'audit-logs' as AdminTab,

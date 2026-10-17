@@ -11,19 +11,21 @@ import {
   ExternalLink,
   ChevronRight,
   RefreshCw,
-  SlidersHorizontal,
+  KeyRound,
 } from 'lucide-react';
 
 export interface AdminHeaderProps {
   currentTabName: string;
   onRefresh?: () => void;
   isRefreshing?: boolean;
+  onOpenRoles?: () => void;
 }
 
 export const AdminHeader: React.FC<AdminHeaderProps> = ({
   currentTabName,
   onRefresh,
   isRefreshing = false,
+  onOpenRoles,
 }) => {
   const { address, isConnected, activeRole, chain } = useAdminAuth();
   const { open } = useAppKit();
@@ -100,10 +102,10 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setIsAccountModalOpen(true)}
+                onClick={() => (onOpenRoles ? onOpenRoles() : setIsAccountModalOpen(true))}
                 className="hidden md:flex gap-1.5 text-xs"
               >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
+                <KeyRound className="w-3.5 h-3.5" />
                 <span>RBAC Config</span>
               </Button>
             </div>
@@ -121,10 +123,11 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
         </div>
       </header>
 
-      {/* Account & Privileges Modal */}
+      {/* Account credentials modal (read-only privileges) */}
       <AccountDetailsModal
         isOpen={isAccountModalOpen}
         onClose={() => setIsAccountModalOpen(false)}
+        onManageRoles={onOpenRoles}
       />
     </>
   );
