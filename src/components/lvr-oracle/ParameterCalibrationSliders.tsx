@@ -12,6 +12,12 @@ interface ParameterCalibrationSlidersProps {
   onOpenPreview: () => void;
   canCalibrate: boolean;
   hasDiffs: boolean;
+  validationError?: string | null;
+}
+
+/** Display helper: pips → percent (1e6 pips = 100%). */
+function pipsToPct(pips: number): string {
+  return ((pips / 1_000_000) * 100).toFixed(2);
 }
 
 export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersProps> = ({
@@ -23,10 +29,10 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
   onOpenPreview,
   canCalibrate,
   hasDiffs,
+  validationError,
 }) => {
   return (
     <Card className="p-5 border border-hairline-theme bg-surface-theme space-y-6">
-      {/* Calibration Header & Presets */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-hairline-theme">
         <div className="space-y-0.5">
           <div className="flex items-center gap-2">
@@ -36,11 +42,11 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
             </h3>
           </div>
           <p className="text-xs text-secondary-theme">
-            Fine-tune half-life decay constants, base fee floor, and volatility scaling factors.
+            Fee bounds are pip-scale (&lt; 1e6). Half-life must be &gt; 0. Base pool fee is PoolKey.fee
+            (not set here).
           </p>
         </div>
 
-        {/* Quick Presets */}
         <div className="flex items-center gap-1.5 shrink-0">
           <Button
             variant="outline"
@@ -69,17 +75,15 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
         </div>
       </div>
 
-      {/* Sliders Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Parameter 1: Decay Half-Life (tau) */}
         <div className="p-4 rounded-xl bg-subtle-theme border border-hairline-theme space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <span className="text-xs font-semibold text-primary-theme">
-                Decay Half-Life ($\tau$)
+                Decay Half-Life (τ)
               </span>
               <p className="text-[11px] text-secondary-theme">
-                Time in seconds for elevated dynamic spread to halve.
+                Seconds for elevated dynamic spread to halve (must be &gt; 0).
               </p>
             </div>
             <div className="flex items-center gap-1.5 font-mono">
@@ -94,7 +98,7 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
 
           <input
             type="range"
-            min="2"
+            min="1"
             max="60"
             step="1"
             value={draft.decayHalfLifeSeconds}
@@ -102,30 +106,27 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
             className="w-full h-1.5 bg-hairline-theme rounded-lg appearance-none cursor-pointer accent-emerald-500"
           />
           <div className="flex justify-between text-[10px] font-mono text-secondary-theme">
-            <span>2s (Instant decay)</span>
-            <span>12s (1 Block)</span>
-            <span>60s (Sustained protect)</span>
+            <span>1s</span>
+            <span>12s</span>
+            <span>60s</span>
           </div>
         </div>
 
-        {/* Parameter 2: Volatility Surcharge Scaling (Alpha) */}
         <div className="p-4 rounded-xl bg-subtle-theme border border-hairline-theme space-y-3">
           <div className="flex items-center justify-between">
             <div>
               <span className="text-xs font-semibold text-primary-theme">
-                Volatility Scaling Factor ($\alpha$)
+                Volatility Scaling (α)
               </span>
               <p className="text-[11px] text-secondary-theme">
-                Surcharge added per tick deviation during price shocks.
+                Surcharge scale per tick deviation during price shocks.
               </p>
             </div>
             <div className="flex items-center gap-1.5 font-mono">
               <span className="text-xs text-secondary-theme line-through">
                 {current.volatilityAlpha}
               </span>
-              <span className="text-xs font-bold text-emerald-500">
-                {draft.volatilityAlpha}
-              </span>
+              <span className="text-xs font-bold text-emerald-500">{draft.volatilityAlpha}</span>
             </div>
           </div>
 
@@ -139,29 +140,26 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
             className="w-full h-1.5 bg-hairline-theme rounded-lg appearance-none cursor-pointer accent-emerald-500"
           />
           <div className="flex justify-between text-[10px] font-mono text-secondary-theme">
-            <span>5 (Low sensitivity)</span>
-            <span>50 (Standard)</span>
-            <span>150 (Aggressive)</span>
+            <span>5</span>
+            <span>50</span>
+            <span>150</span>
           </div>
         </div>
 
-        {/* Parameter 3: Base Fee Floor */}
         <div className="p-4 rounded-xl bg-subtle-theme border border-hairline-theme space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-xs font-semibold text-primary-theme">
-                Base Fee Floor ($f_0$)
-              </span>
+              <span className="text-xs font-semibold text-primary-theme">Min Dynamic Fee</span>
               <p className="text-[11px] text-secondary-theme">
-                Standard baseline fee during zero volatility periods.
+                Floor in pips (&lt; 1e6). Must be ≤ max.
               </p>
             </div>
             <div className="flex items-center gap-1.5 font-mono">
               <span className="text-xs text-secondary-theme line-through">
-                {current.baseFeeBps} bps
+                {current.minFeePips} pips
               </span>
               <span className="text-xs font-bold text-emerald-500">
-                {draft.baseFeeBps} bps
+                {draft.minFeePips} pips ({pipsToPct(draft.minFeePips)}%)
               </span>
             </div>
           </div>
@@ -169,68 +167,66 @@ export const ParameterCalibrationSliders: React.FC<ParameterCalibrationSlidersPr
           <input
             type="range"
             min="1"
-            max="100"
-            step="1"
-            value={draft.baseFeeBps}
-            onChange={(e) => onUpdate({ baseFeeBps: Number(e.target.value) })}
+            max="100000"
+            step="100"
+            value={draft.minFeePips}
+            onChange={(e) => onUpdate({ minFeePips: Number(e.target.value) })}
             className="w-full h-1.5 bg-hairline-theme rounded-lg appearance-none cursor-pointer accent-emerald-500"
           />
           <div className="flex justify-between text-[10px] font-mono text-secondary-theme">
-            <span>1 bp (0.01%)</span>
-            <span>30 bps (0.30%)</span>
-            <span>100 bps (1.00%)</span>
+            <span>1 pip</span>
+            <span>10k</span>
+            <span>100k</span>
           </div>
         </div>
 
-        {/* Parameter 4: Maximum Fee Cap */}
         <div className="p-4 rounded-xl bg-subtle-theme border border-hairline-theme space-y-3">
           <div className="flex items-center justify-between">
             <div>
-              <span className="text-xs font-semibold text-primary-theme">
-                Max Dynamic Fee Cap (f_max)
-              </span>
+              <span className="text-xs font-semibold text-primary-theme">Max Dynamic Fee Cap</span>
               <p className="text-[11px] text-secondary-theme">
-                Upper limit boundary to avoid excessive trade slippage.
+                Ceiling in pips (&lt; 1e6). Rejected on-chain if ≥ 1e6 or &lt; min.
               </p>
             </div>
             <div className="flex items-center gap-1.5 font-mono">
               <span className="text-xs text-secondary-theme line-through">
-                {(current.maxFeeBps / 100).toFixed(1)}%
+                {current.maxFeePips} pips
               </span>
               <span className="text-xs font-bold text-emerald-500">
-                {(draft.maxFeeBps / 100).toFixed(1)}%
+                {draft.maxFeePips} pips ({pipsToPct(draft.maxFeePips)}%)
               </span>
             </div>
           </div>
 
           <input
             type="range"
-            min="100"
-            max="3000"
-            step="50"
-            value={draft.maxFeeBps}
-            onChange={(e) => onUpdate({ maxFeeBps: Number(e.target.value) })}
+            min="1000"
+            max="500000"
+            step="1000"
+            value={draft.maxFeePips}
+            onChange={(e) => onUpdate({ maxFeePips: Number(e.target.value) })}
             className="w-full h-1.5 bg-hairline-theme rounded-lg appearance-none cursor-pointer accent-emerald-500"
           />
           <div className="flex justify-between text-[10px] font-mono text-secondary-theme">
-            <span>1.0%</span>
-            <span>10.0% (Default)</span>
-            <span>30.0%</span>
+            <span>0.10%</span>
+            <span>10%</span>
+            <span>50%</span>
           </div>
         </div>
       </div>
 
-      {/* Action Footer & Diff Confirmation */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-hairline-theme">
         <div className="flex items-center gap-2">
-          {hasDiffs ? (
+          {validationError ? (
+            <span className="text-xs font-mono text-red-500">{validationError}</span>
+          ) : hasDiffs ? (
             <div className="flex items-center gap-2 text-xs font-mono text-amber-500">
               <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
               <span>Unsaved parameter changes detected</span>
             </div>
           ) : (
             <span className="text-xs font-mono text-secondary-theme">
-              Parameters matched with on-chain oracle state
+              Parameters matched with on-chain LVR state
             </span>
           )}
         </div>

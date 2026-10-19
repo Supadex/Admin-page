@@ -34,7 +34,7 @@ export const ROLE_DEFINITIONS: Record<AdminRole, RoleDefinition> = {
     badgeVariant: 'warning',
     permissions: [
       'admin.circuit_breaker.trigger',
-      'admin.oracle.calibrate',
+      // LVR setters require SupaRoles Operator — not Guardian.
     ],
   },
   OPERATOR: {
@@ -59,8 +59,10 @@ export const ROLE_DEFINITIONS: Record<AdminRole, RoleDefinition> = {
 };
 
 export const CONTRACT_ROLES: Record<string, AdminRole> = {
-  // Canonical configured test addresses
+  // Anvil default accounts (local)
   '0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc': 'OWNER',
   '0x976EA74026E726554dB657fA54763abd0C3a0aa9': 'GUARDIAN',
   '0x14dC79964da2C08b23698B3D3cc7Ca32193d9955': 'OPERATOR',
+  // Testnet deployer (GOVERNANCE / GUARDIAN / OPERATOR / DAO for DeploySupaDex)
+  '0x402f51349FEB830679Fb492cB36964Ac843FEb9F': 'OWNER',
 };

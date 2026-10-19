@@ -28,9 +28,11 @@ import { TreasuryClaimsConsole } from './components/treasury';
 import { AuditLogsConsole } from './components/audit-logs';
 import { RoleManagementConsole } from './components/roles';
 import { getAddressesForChain } from './contracts/addresses';
-import { PluginWhitelistABI } from './contracts/abis';
-import { useAccount, useWriteContract, useReadContract } from 'wagmi';
-import { isAddress, type Address } from 'viem';
+import { PluginWhitelistABI, AntiJITVestingPluginABI } from './contracts/abis';
+import { useAccount, useReadContract } from 'wagmi';
+import { isAddress, type Address, zeroAddress } from 'viem';
+import { useTimelockTx } from './hooks/useTimelockTx';
+import { getKnownHooks } from './utils/poolMath';
 import {
   Activity,
   Layers,
@@ -51,15 +53,19 @@ export function App() {
   const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [whitelistInput, setWhitelistInput] = useState('');
+  const [whitelistBusy, setWhitelistBusy] = useState(false);
+  const [delistTarget, setDelistTarget] = useState<Address | null>(null);
+  const [allowDelta, setAllowDelta] = useState(false);
 
   const { activeRole, activeRoleDef, hasPermission, addresses } = useAdminAuth();
   const { chain } = useAccount();
   const { pools, isLoading: poolsLoading, refetch: refetchPools } = useAdminPools();
   const { currentTier, refetchAll: refetchCircuit } = useCircuitBreaker();
   const addrs = getAddressesForChain(chain?.id ?? 31337);
-  const { writeContractAsync } = useWriteContract();
+  const { scheduleAndMaybeExecute } = useTimelockTx();
+  const knownHooks = getKnownHooks(addrs);
 
-  const { data: lvrWhitelisted, refetch: refetchWl } = useReadContract({
+  const { data: lvrWhitelisted, refetch: refetchLvrWl } = useReadContract({
     address: addrs?.pluginWhitelist,
     abi: PluginWhitelistABI,
     functionName: 'isPluginWhitelisted',
@@ -67,22 +73,67 @@ export function App() {
     query: { enabled: !!addrs?.pluginWhitelist && !!addrs?.lvrShieldPlugin },
   });
 
+  const { data: antiJitWhitelisted, refetch: refetchJitWl } = useReadContract({
+    address: addrs?.pluginWhitelist,
+    abi: PluginWhitelistABI,
+    functionName: 'isPluginWhitelisted',
+    args: addrs?.antiJITPlugin ? [addrs.antiJITPlugin] : undefined,
+    query: { enabled: !!addrs?.pluginWhitelist && !!addrs?.antiJITPlugin },
+  });
+
+  const { data: antiJitCanDelta, refetch: refetchJitDelta } = useReadContract({
+    address: addrs?.pluginWhitelist,
+    abi: PluginWhitelistABI,
+    functionName: 'canPluginReturnDelta',
+    args: addrs?.antiJITPlugin ? [addrs.antiJITPlugin] : undefined,
+    query: { enabled: !!addrs?.pluginWhitelist && !!addrs?.antiJITPlugin },
+  });
+
+  const { data: minResidencyBlocks } = useReadContract({
+    address: addrs?.antiJITPlugin,
+    abi: AntiJITVestingPluginABI,
+    functionName: 'minResidencyBlocks',
+    query: { enabled: !!addrs?.antiJITPlugin },
+  });
+
+  const refetchWl = async () => {
+    await Promise.all([refetchLvrWl(), refetchJitWl(), refetchJitDelta()]);
+  };
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    await Promise.all([refetchPools(), refetchCircuit()]);
+    await Promise.all([refetchPools(), refetchCircuit(), refetchWl()]);
     setIsRefreshing(false);
   };
 
-  const handleWhitelistPlugin = async () => {
-    if (!addrs?.pluginWhitelist || !isAddress(whitelistInput)) return;
-    await writeContractAsync({
-      address: addrs.pluginWhitelist,
-      abi: PluginWhitelistABI,
-      functionName: 'setPluginWhitelisted',
-      args: [whitelistInput as Address, true],
-    });
-    await refetchWl();
-    setWhitelistInput('');
+  const poolsUsingPlugin = (plugin: Address) =>
+    pools.filter((p) => p.plugin?.toLowerCase() === plugin.toLowerCase());
+
+  const handleWhitelistPlugin = async (plugin: Address, whitelisted: boolean, withDelta: boolean) => {
+    if (!addrs?.pluginWhitelist || !isAddress(plugin) || plugin === zeroAddress) return;
+    setWhitelistBusy(true);
+    try {
+      await scheduleAndMaybeExecute({
+        target: addrs.pluginWhitelist,
+        abi: PluginWhitelistABI,
+        functionName: 'setPluginWhitelisted',
+        args: [plugin, whitelisted],
+      });
+      if (whitelisted && withDelta) {
+        await scheduleAndMaybeExecute({
+          target: addrs.pluginWhitelist,
+          abi: PluginWhitelistABI,
+          functionName: 'setPluginCanReturnDelta',
+          args: [plugin, true],
+        });
+      }
+      await refetchWl();
+      setWhitelistInput('');
+      setAllowDelta(false);
+      setDelistTarget(null);
+    } finally {
+      setWhitelistBusy(false);
+    }
   };
 
   const poolColumns: AuditColumn<AdminPool>[] = [
@@ -263,28 +314,120 @@ export function App() {
               </div>
 
               <PermissionGuard permission="admin.hooks.whitelist" disableInsteadOfHide={true}>
-                <div className="p-4 rounded-2xl bg-surface-theme border border-hairline-theme space-y-3">
-                  <div className="flex items-center justify-between">
+                <div className="p-4 rounded-2xl bg-surface-theme border border-hairline-theme space-y-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="text-xs font-semibold uppercase tracking-wider text-secondary-theme">
-                      Plugin Whitelist
+                      Plugin Whitelist (Timelock)
                     </span>
-                    <Badge variant={lvrWhitelisted ? 'success' : 'warning'}>
-                      LVR {lvrWhitelisted ? 'Whitelisted' : 'Not Listed'}
-                    </Badge>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant={lvrWhitelisted ? 'success' : 'warning'}>
+                        LVR {lvrWhitelisted ? 'Listed' : 'Not Listed'}
+                      </Badge>
+                      <Badge variant={antiJitWhitelisted ? 'success' : 'warning'}>
+                        AntiJIT {antiJitWhitelisted ? 'Listed' : 'Not Listed'}
+                      </Badge>
+                      {antiJitWhitelisted && (
+                        <Badge variant={antiJitCanDelta ? 'success' : 'danger'}>
+                          canReturnDelta {antiJitCanDelta ? 'ON' : 'OFF'}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex gap-2">
+
+                  {addrs?.antiJITPlugin && (
+                    <p className="text-[11px] text-secondary-theme font-mono">
+                      AntiJIT minResidencyBlocks={String(minResidencyBlocks ?? '—')} · fee vesting
+                      requires canReturnDelta. PoolKey.plugin is singular — LVR and AntiJIT cannot
+                      share one pool.
+                    </p>
+                  )}
+
+                  <div className="flex flex-wrap gap-2">
+                    {knownHooks
+                      .filter((h) => h.type !== 'vanilla')
+                      .map((h) => {
+                        const listed =
+                          h.type === 'lvr' ? !!lvrWhitelisted : h.type === 'anti-jit' ? !!antiJitWhitelisted : false;
+                        return (
+                          <div key={h.address} className="flex items-center gap-1.5">
+                            {!listed ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={whitelistBusy}
+                                onClick={() =>
+                                  void handleWhitelistPlugin(
+                                    h.address,
+                                    true,
+                                    !!h.needsCanReturnDelta || h.type === 'anti-jit'
+                                  )
+                                }
+                              >
+                                Whitelist {h.name.split(' ')[0]}
+                                {h.needsCanReturnDelta ? ' +Δ' : ''}
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={whitelistBusy}
+                                onClick={() => setDelistTarget(h.address)}
+                              >
+                                Delist {h.name.split(' ')[0]}
+                              </Button>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+
+                  <div className="flex gap-2 items-start">
                     <Input
                       value={whitelistInput}
                       onChange={(e) => setWhitelistInput(e.target.value)}
-                      placeholder="0x plugin address"
+                      placeholder="0x custom plugin"
                       className="font-mono text-xs"
                     />
-                    <Button variant="outline" size="sm" onClick={() => void handleWhitelistPlugin()}>
-                      Whitelist
+                    <label className="flex items-center gap-1.5 text-[11px] text-secondary-theme shrink-0 pt-2">
+                      <input
+                        type="checkbox"
+                        checked={allowDelta}
+                        onChange={(e) => setAllowDelta(e.target.checked)}
+                      />
+                      +canReturnDelta
+                    </label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={whitelistBusy || !isAddress(whitelistInput)}
+                      onClick={() =>
+                        void handleWhitelistPlugin(whitelistInput as Address, true, allowDelta)
+                      }
+                    >
+                      Schedule
                     </Button>
                   </div>
                 </div>
               </PermissionGuard>
+
+              <ConfirmModal
+                isOpen={!!delistTarget}
+                onClose={() => setDelistTarget(null)}
+                title="Delist plugin?"
+                description={
+                  delistTarget
+                    ? `Delisting ${shortenAddress(delistTarget)} disables swap / modifyLiquidity / donate for ${
+                        poolsUsingPlugin(delistTarget).length
+                      } live pool(s) that use this plugin. This goes through the Timelock.`
+                    : ''
+                }
+                confirmText="Schedule Delist"
+                variant="danger"
+                onConfirm={() => {
+                  if (delistTarget) void handleWhitelistPlugin(delistTarget, false, false);
+                }}
+                isLoading={whitelistBusy}
+              />
 
               <AuditTable
                 columns={poolColumns}

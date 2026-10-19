@@ -223,107 +223,143 @@ export function buildSeedMintParams(args: {
   return { tickLower, tickUpper, liquidity, amount0Wei, amount1Wei };
 }
 
-/** Anvil DeployTestTokens catalog — matches frontend CHAIN_TOKENS[31337] */
-export const KNOWN_TOKENS: KnownToken[] = [
-  {
-    address: '0x0000000000000000000000000000000000000000',
-    symbol: 'ETH',
-    name: 'Anvil Ether',
-    decimals: 18,
-    priceUSD: 3120.5,
-  },
-  {
-    address: '0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9',
-    symbol: 'USDC',
-    name: 'USD Coin',
-    decimals: 6,
-    priceUSD: 1.0,
-  },
-  {
-    address: '0x1613beB3B2C4f22Ee086B2b38C1476A3cE7f78E8',
-    symbol: 'USDT',
-    name: 'Tether USD',
-    decimals: 6,
-    priceUSD: 1.0,
-  },
-  {
-    address: '0x851356ae760d987E095750cCeb3bC6014560891C',
-    symbol: 'DAI',
-    name: 'Dai Stablecoin',
-    decimals: 18,
-    priceUSD: 1.0,
-  },
-  {
-    address: '0xf5059a5D33d5853360D16C683c16e67980206f36',
-    symbol: 'WBTC',
-    name: 'Wrapped Bitcoin',
-    decimals: 8,
-    priceUSD: 64500,
-  },
-  {
-    address: '0x95401dc811bb5740090279Ba06cfA8fcF6113778',
-    symbol: 'WETH',
-    name: 'Wrapped Ether',
-    decimals: 18,
-    priceUSD: 3120.5,
-  },
-  {
-    address: '0x998abeb3E57409262aE5b751f60747921B33613E',
-    symbol: 'SUPA',
-    name: 'SupaDex Governance',
-    decimals: 18,
-    priceUSD: 2.45,
-  },
-  {
-    address: '0x70e0bA845a1A0F2DA3359C97E0285013525FFC49',
-    symbol: 'LINK',
-    name: 'Chainlink Token',
-    decimals: 18,
-    priceUSD: 12.4,
-  },
-  {
-    address: '0x4826533B4897376654Bb4d4AD88B7faFD0C98528',
-    symbol: 'UNI',
-    name: 'Uniswap',
-    decimals: 18,
-    priceUSD: 7.85,
-  },
-  {
-    address: '0x99bbA657f2BbC93c02D617f8bA121cB8Fc104Acf',
-    symbol: 'AAVE',
-    name: 'Aave Token',
-    decimals: 18,
-    priceUSD: 155.0,
-  },
-  {
-    address: '0x0E801D84Fa97b50751Dbf25036d067dCf18858bF',
-    symbol: 'ARB',
-    name: 'Arbitrum',
-    decimals: 18,
-    priceUSD: 0.58,
-  },
-];
+const ZERO_TOKEN = '0x0000000000000000000000000000000000000000' as `0x${string}`;
 
-export const KNOWN_HOOKS = [
-  {
-    address: '0x0000000000000000000000000000000000000000' as `0x${string}`,
-    name: 'No Plugin / Vanilla Pool',
-    description: 'Standard multi-curve pool with static base swap fee and zero hook overhead.',
-    type: 'vanilla',
-  },
-  {
-    address: '0x0DCd1Bf9A1b36cE34237eEaFef220932846BCD82' as `0x${string}`,
-    name: 'Dynamic LVR & Volatility Oracle Hook',
-    description: 'Dynamic spread decay protecting LPs from toxic arbitrage orderflow.',
-    type: 'lvr',
-  },
-  {
-    address: '0x0B306BF915C4d645ff596e518fAf3F9669b97016' as `0x${string}`,
-    name: 'Anti-JIT Fee Lock & Vesting Hook',
-    description: 'Imposes short-term fee penalty on just-in-time liquidity sandwiching.',
-    type: 'anti-jit',
-  },
-];
+/** Chain-scoped token catalogs for Create Pool / seed UI. */
+export function getKnownTokens(chainId?: number): KnownToken[] {
+  switch (chainId) {
+    case 11155111: // Sepolia
+      return [
+        { address: ZERO_TOKEN, symbol: 'ETH', name: 'Sepolia Ether', decimals: 18, priceUSD: 0 },
+        {
+          address: '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',
+          symbol: 'USDC',
+          name: 'USD Coin (Sepolia)',
+          decimals: 6,
+          priceUSD: 1,
+        },
+        {
+          address: '0x7169D38820dfd117C3FA1f22a697dBA58d90BA06',
+          symbol: 'USDT',
+          name: 'Tether USD (Sepolia)',
+          decimals: 6,
+          priceUSD: 1,
+        },
+      ];
+    case 84532: // Base Sepolia
+      return [
+        { address: ZERO_TOKEN, symbol: 'ETH', name: 'Base Sepolia Ether', decimals: 18, priceUSD: 0 },
+        {
+          address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+          symbol: 'USDC',
+          name: 'USD Coin (Base Sepolia)',
+          decimals: 6,
+          priceUSD: 1,
+        },
+      ];
+    case 10143: // Monad Testnet
+      return [
+        { address: ZERO_TOKEN, symbol: 'MON', name: 'Monad Testnet', decimals: 18, priceUSD: 0 },
+        {
+          address: '0x534b2f3A21130d7a60830c2Df862319e593943A3',
+          symbol: 'USDC',
+          name: 'USD Coin (Monad Testnet)',
+          decimals: 6,
+          priceUSD: 1,
+        },
+      ];
+    case 31337:
+    default:
+      return [
+        { address: ZERO_TOKEN, symbol: 'ETH', name: 'Anvil Ether', decimals: 18, priceUSD: 3120.5 },
+        {
+          address: '0xa82fF9aFd8f496c3d6ac40E2a0F282E47488CFc9',
+          symbol: 'USDC',
+          name: 'USD Coin',
+          decimals: 6,
+          priceUSD: 1.0,
+        },
+        {
+          address: '0x1613beB3B2C4f22Ee086B2b38C1476A3cE7f78E8',
+          symbol: 'USDT',
+          name: 'Tether USD',
+          decimals: 6,
+          priceUSD: 1.0,
+        },
+        {
+          address: '0x851356ae760d987E095750cCeb3bC6014560891C',
+          symbol: 'DAI',
+          name: 'Dai Stablecoin',
+          decimals: 18,
+          priceUSD: 1.0,
+        },
+        {
+          address: '0xf5059a5D33d5853360D16C683c16e67980206f36',
+          symbol: 'WBTC',
+          name: 'Wrapped Bitcoin',
+          decimals: 8,
+          priceUSD: 64500,
+        },
+        {
+          address: '0x95401dc811bb5740090279Ba06cfA8fcF6113778',
+          symbol: 'WETH',
+          name: 'Wrapped Ether',
+          decimals: 18,
+          priceUSD: 3120.5,
+        },
+      ];
+  }
+}
+
+/** @deprecated Prefer getKnownTokens(chainId) */
+export const KNOWN_TOKENS: KnownToken[] = getKnownTokens(31337);
+
+export type KnownHook = {
+  address: `0x${string}`;
+  name: string;
+  description: string;
+  type: 'vanilla' | 'lvr' | 'anti-jit';
+  needsCanReturnDelta?: boolean;
+};
+
+const ZERO_HOOK = '0x0000000000000000000000000000000000000000' as `0x${string}`;
+
+/** Build hook catalog from live protocol addresses (never hardcode CREATE addresses). */
+export function getKnownHooks(addrs?: {
+  lvrShieldPlugin?: `0x${string}`;
+  antiJITPlugin?: `0x${string}`;
+} | null): KnownHook[] {
+  const hooks: KnownHook[] = [
+    {
+      address: ZERO_HOOK,
+      name: 'No Plugin / Vanilla Pool',
+      description: 'Standard multi-curve pool with static base swap fee and zero hook overhead.',
+      type: 'vanilla',
+    },
+  ];
+  if (addrs?.lvrShieldPlugin && addrs.lvrShieldPlugin !== ZERO_HOOK) {
+    hooks.push({
+      address: addrs.lvrShieldPlugin,
+      name: 'Dynamic LVR & Volatility Oracle Hook',
+      description: 'Adaptive fee surcharge under tick volatility with half-life decay (pip-scale bounds).',
+      type: 'lvr',
+    });
+  }
+  if (addrs?.antiJITPlugin && addrs.antiJITPlugin !== ZERO_HOOK) {
+    hooks.push({
+      address: addrs.antiJITPlugin,
+      name: 'Anti-JIT Fee Vesting Hook',
+      description:
+        'Linearly vests accrued swap fees over minResidencyBlocks; unvested share redistributed to remaining LPs. Requires canReturnDelta.',
+      type: 'anti-jit',
+      needsCanReturnDelta: true,
+    });
+  }
+  return hooks;
+}
+
+/** @deprecated Prefer getKnownHooks(addrs) — static fallback for type imports only. */
+export const KNOWN_HOOKS = getKnownHooks();
 
 export const FEE_TIERS = [
   {
