@@ -13,7 +13,7 @@ import { SupaPoolManagerABI, ERC20ABI } from '../contracts/abis';
 import { getAddressesForChain } from '../contracts/addresses';
 import {
   CurveType,
-  KNOWN_TOKENS,
+  getKnownTokens,
   computePoolId,
   type KnownToken,
 } from '../utils/poolMath';
@@ -73,12 +73,14 @@ function resolveCurveType(
 
 async function resolveToken(
   publicClient: PublicClient,
-  address: Address
+  address: Address,
+  chainId?: number
 ): Promise<KnownToken> {
-  const known = KNOWN_TOKENS.find((t) => t.address.toLowerCase() === address.toLowerCase());
+  const catalog = getKnownTokens(chainId);
+  const known = catalog.find((t) => t.address.toLowerCase() === address.toLowerCase());
   if (known) return known;
   if (address === zeroAddress) {
-    return KNOWN_TOKENS.find((t) => t.address === zeroAddress) || {
+    return catalog.find((t) => t.address === zeroAddress) || {
       address: zeroAddress,
       symbol: 'ETH',
       name: 'Ether',
@@ -174,8 +176,8 @@ export function useAdminPools() {
         }
 
         const [token0, token1] = await Promise.all([
-          resolveToken(publicClient, currency0),
-          resolveToken(publicClient, currency1),
+          resolveToken(publicClient, currency0, chain?.id),
+          resolveToken(publicClient, currency1, chain?.id),
         ]);
 
         let tvlUSD = 0;
@@ -216,7 +218,7 @@ export function useAdminPools() {
     } finally {
       setIsLoading(false);
     }
-  }, [publicClient, addrs?.poolManager]);
+  }, [publicClient, addrs?.poolManager, chain?.id]);
 
   useEffect(() => {
     void refetch();

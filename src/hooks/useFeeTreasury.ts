@@ -3,6 +3,7 @@ import { useAccount, useReadContracts, useWriteContract, useWaitForTransactionRe
 import { getAddressesForChain } from '../contracts/addresses';
 import { SupaFeeCollectorABI, SupaPoolManagerABI } from '../contracts/abis';
 import { useAdminPools } from './useAdminPools';
+import { useTimelockTx } from './useTimelockTx';
 import { zeroAddress, type Address } from 'viem';
 
 export interface PoolFeeRecord {
@@ -153,6 +154,7 @@ export function useFeeTreasury() {
 
   const { writeContractAsync, data: txHash, isPending } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash: txHash });
+  const { scheduleAndMaybeExecute } = useTimelockTx();
 
   useEffect(() => {
     if (isSuccess && txHash) {
@@ -173,8 +175,9 @@ export function useFeeTreasury() {
     async (newSplit: Partial<FeeSplitConfig>) => {
       if (!addrs?.feeCollector) throw new Error('FeeCollector not deployed');
       const next = { ...feeSplit, ...newSplit };
-      await writeContractAsync({
-        address: addrs.feeCollector,
+      // FeeCollector.owner is Timelock after deploy — must schedule.
+      await scheduleAndMaybeExecute({
+        target: addrs.feeCollector,
         abi: SupaFeeCollectorABI,
         functionName: 'setFeeSplit',
         args: [
@@ -185,7 +188,7 @@ export function useFeeTreasury() {
       });
       await refetchSplit();
     },
-    [addrs, feeSplit, writeContractAsync, refetchSplit]
+    [addrs, feeSplit, scheduleAndMaybeExecute, refetchSplit]
   );
 
   const executeBatchSweep = useCallback(

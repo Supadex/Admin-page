@@ -69,13 +69,16 @@ export const SupaRolesABI = parseAbi([
 export const PluginWhitelistABI = parseAbi([
   'function owner() external view returns (address)',
   'function isPluginWhitelisted(address plugin) external view returns (bool)',
+  'function canPluginReturnDelta(address plugin) external view returns (bool)',
   'function setPluginWhitelisted(address plugin, bool whitelisted) external',
+  'function setPluginCanReturnDelta(address plugin, bool allowed) external',
   'function transferOwnership(address newOwner) external',
   'event PluginWhitelisted(address indexed plugin, bool whitelisted)',
 ] as const);
 
 export const LVRShieldPluginABI = parseAbi([
   'function roles() external view returns (address)',
+  'function oracle() external view returns (address)',
   'function poolLVRStates(bytes32 poolId) external view returns (uint24 baseFee, uint24 lastFee, uint32 lastSwapTimestamp, int24 lastTick, uint32 decayHalfLife, uint24 volatilityAlpha, uint24 minFeeBps, uint24 maxFeeBps, bool isInitialized)',
   'function setDecayHalfLife((address currency0, address currency1, uint24 fee, int24 tickSpacing, address plugin, uint8 curveType) key, uint32 newDecayHalfLife) external',
   'function setVolatilityAlpha((address currency0, address currency1, uint24 fee, int24 tickSpacing, address plugin, uint8 curveType) key, uint24 newAlpha) external',
@@ -85,8 +88,14 @@ export const LVRShieldPluginABI = parseAbi([
   'event LVRParametersUpdated(bytes32 indexed poolId, uint32 decayHalfLife, uint24 volatilityAlpha, uint24 minFeeBps, uint24 maxFeeBps)',
 ] as const);
 
+export const AntiJITVestingPluginABI = parseAbi([
+  'function minResidencyBlocks() external view returns (uint32)',
+  'function residencies(bytes32 poolId, bytes32 positionKey) external view returns (uint32 lastDepositBlock, uint32 lastDepositTimestamp, uint128 liquidity)',
+] as const);
+
 export const VolatilityTWAPOracleABI = parseAbi([
-  'function grow(bytes32 poolId, uint16 newCardinalityNext) external returns (uint16 cardinalityNextUpdated)',
+  'function writer() external view returns (address)',
+  'function states(bytes32 poolId) external view returns (uint16 index, uint16 cardinality, uint16 cardinalityNext)',
   'function observe(bytes32 poolId, uint32[] secondsAgos) external view returns (int56[] tickCumulatives, uint160[] secondsPerLiquidityCumulativeX128s)',
   'function getInstantaneousVolatility(bytes32 poolId, uint32 windowSeconds) external view returns (uint256)',
 ] as const);

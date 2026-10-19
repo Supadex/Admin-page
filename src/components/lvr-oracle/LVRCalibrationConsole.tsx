@@ -14,6 +14,10 @@ import {
   Percent,
 } from 'lucide-react';
 
+function pipsToBps(pips: number): number {
+  return pips / 100;
+}
+
 export const LVRCalibrationConsole: React.FC = () => {
   const {
     pools,
@@ -30,6 +34,10 @@ export const LVRCalibrationConsole: React.FC = () => {
     applyCalibration,
     applyPreset,
     canCalibrate,
+    validationError,
+    rolesConfigured,
+    isOperator,
+    oracleAddress,
   } = useLVRCalibration();
 
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -43,7 +51,7 @@ export const LVRCalibrationConsole: React.FC = () => {
         <h2 className="text-sm font-bold text-primary-theme">No LVR-shielded pools</h2>
         <p className="text-xs text-secondary-theme max-w-md mx-auto">
           Initialize a pool with the LVR Shield plugin attached, then return here to calibrate
-          decay, volatility alpha, and oracle cardinality.
+          decay, volatility alpha, and fee bounds (pip-scale).
         </p>
       </div>
     );
@@ -51,7 +59,6 @@ export const LVRCalibrationConsole: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Console Top Master HUD */}
       <div className="p-6 rounded-2xl bg-surface-theme border border-hairline-theme flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2.5">
@@ -59,22 +66,32 @@ export const LVRCalibrationConsole: React.FC = () => {
               <SlidersHorizontal className="w-5 h-5 text-emerald-500" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base font-bold text-primary-theme">
                   Dynamic LVR & Volatility Oracle Calibration Console
                 </h2>
                 <Badge variant="success" size="sm">
-                  Active Shield
+                  LVR Only
                 </Badge>
+                {!rolesConfigured && (
+                  <Badge variant="danger" size="sm">
+                    roles unset
+                  </Badge>
+                )}
+                {rolesConfigured && !isOperator && (
+                  <Badge variant="warning" size="sm">
+                    not Operator
+                  </Badge>
+                )}
               </div>
               <p className="text-xs text-secondary-theme">
-                Simulate and adjust volatility-adaptive dynamic fee curves to neutralize Loss-Versus-Rebalancing (LVR).
+                On-chain poolLVRStates · pip fee units · Operator-gated setters · oracle via
+                lvr.oracle()
               </p>
             </div>
           </div>
         </div>
 
-        {/* Pool Switcher Dropdown */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="text-xs font-mono text-secondary-theme">Target Pool:</div>
           <Select
@@ -82,21 +99,20 @@ export const LVRCalibrationConsole: React.FC = () => {
             onChange={(val) => handleSelectPool(val)}
             options={pools.map((p) => ({
               value: p.poolId,
-              label: `${p.pair} (${p.curveType} - ${p.baseFeeBps} bps)`,
+              label: `${p.pair} (${p.curveType} - ${p.baseFeePips} pips)`,
             }))}
             className="w-64 text-xs font-mono"
           />
         </div>
       </div>
 
-      {/* Top High-Density Metric Readouts */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Current Dynamic Fee"
-          value={`${activePool.lastFeeBps.toFixed(1)} bps`}
-          subValue={`Base: ${activePool.baseFeeBps} bps`}
+          value={`${pipsToBps(activePool.lastFeePips).toFixed(1)} bps`}
+          subValue={`Base: ${activePool.baseFeePips} pips`}
           change={{
-            value: `${(activePool.lastFeeBps - activePool.baseFeeBps).toFixed(1)} bps`,
+            value: `${pipsToBps(activePool.lastFeePips - activePool.baseFeePips).toFixed(1)} bps`,
             positive: false,
             neutral: true,
             period: 'excess decay active',
@@ -107,22 +123,33 @@ export const LVRCalibrationConsole: React.FC = () => {
         />
 
         <StatCard
-          label="Instantaneous Volatility ($\sigma$)"
+          label="Instantaneous Volatility (σ)"
           value={`${activePool.instantaneousVolatility} ticks`}
-          subValue="12-sec window"
-          change={{ value: '4.2 ticks', positive: true, period: 'last 10 blocks' }}
+          subValue="oracle window"
           icon={<TrendingUp className="w-4 h-4 text-blue-500" />}
-          badgeText="Normal"
+          badgeText="On-chain"
           badgeVariant="info"
         />
 
         <StatCard
-          label="Decay Half-Life ($\tau$)"
+          label="Decay Half-Life (τ)"
           value={`${draftConfig.decayHalfLifeSeconds}s`}
-          subValue={draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds ? `was ${activePool.decayHalfLifeSeconds}s` : '1 block equivalent'}
+          subValue={
+            draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds
+              ? `was ${activePool.decayHalfLifeSeconds}s`
+              : 'synced'
+          }
           icon={<Activity className="w-4 h-4 text-purple-500" />}
-          badgeText={draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds ? 'Modified' : 'Synced'}
-          badgeVariant={draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds ? 'warning' : 'default'}
+          badgeText={
+            draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds
+              ? 'Modified'
+              : 'Synced'
+          }
+          badgeVariant={
+            draftConfig.decayHalfLifeSeconds !== activePool.decayHalfLifeSeconds
+              ? 'warning'
+              : 'default'
+          }
         />
 
         <StatCard
@@ -135,15 +162,13 @@ export const LVRCalibrationConsole: React.FC = () => {
         />
       </div>
 
-      {/* Interactive Simulation Visualizer */}
       <LVRVolatilityChart
         decayPoints={decayCurvePoints}
         shockPoints={volatilityShockPoints}
         hasDiffs={hasDiffs}
-        baseFeeBps={draftConfig.baseFeeBps}
+        baseFeeBps={pipsToBps(draftConfig.baseFeePips)}
       />
 
-      {/* Calibration Sliders & Controls */}
       <ParameterCalibrationSliders
         draft={draftConfig}
         current={activePool}
@@ -153,20 +178,18 @@ export const LVRCalibrationConsole: React.FC = () => {
         onOpenPreview={() => setIsPreviewOpen(true)}
         canCalibrate={canCalibrate}
         hasDiffs={hasDiffs}
+        validationError={validationError}
       />
 
-      {/* Observation Ring Buffer Inspector */}
       <OracleObservationRingBuffer
         observations={observations}
         cardinality={activePool.cardinality}
         cardinalityNext={activePool.cardinalityNext}
         instantaneousVolatility={activePool.instantaneousVolatility}
         lastTick={activePool.lastTick}
-        onGrowCardinality={(newCard) => updateDraft({ cardinalityNext: newCard })}
-        canCalibrate={canCalibrate}
+        oracleAddress={oracleAddress}
       />
 
-      {/* Simulation & Transaction Confirmation Modal */}
       <SimulationTxPreviewModal
         isOpen={isPreviewOpen}
         onClose={() => setIsPreviewOpen(false)}

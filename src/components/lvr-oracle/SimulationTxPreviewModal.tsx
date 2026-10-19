@@ -103,21 +103,21 @@ export const SimulationTxPreviewModal: React.FC<SimulationTxPreviewModalProps> =
               />
             )}
 
-            {draft.baseFeeBps !== current.baseFeeBps && (
+            {draft.minFeePips !== current.minFeePips && (
               <DiffViewer
-                label="Base Fee Floor"
-                previousValue={`${current.baseFeeBps}`}
-                nextValue={`${draft.baseFeeBps}`}
-                unit="bps"
+                label="Min Dynamic Fee"
+                previousValue={`${current.minFeePips}`}
+                nextValue={`${draft.minFeePips}`}
+                unit="pips"
               />
             )}
 
-            {draft.maxFeeBps !== current.maxFeeBps && (
+            {draft.maxFeePips !== current.maxFeePips && (
               <DiffViewer
-                label="Dynamic Fee Cap"
-                previousValue={`${(current.maxFeeBps / 100).toFixed(1)}`}
-                nextValue={`${(draft.maxFeeBps / 100).toFixed(1)}`}
-                unit="%"
+                label="Max Dynamic Fee Cap"
+                previousValue={`${current.maxFeePips}`}
+                nextValue={`${draft.maxFeePips}`}
+                unit="pips"
               />
             )}
           </div>

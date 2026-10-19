@@ -11,8 +11,8 @@ import {
 import { DiffViewer, JSONInspector } from '../components/data';
 import {
   CurveType,
-  KNOWN_TOKENS,
-  KNOWN_HOOKS,
+  getKnownTokens,
+  getKnownHooks,
   FEE_TIERS,
   sortCurrencies,
   computePoolId,
@@ -23,6 +23,7 @@ import {
   type KnownToken,
   type PoolKeyStruct,
 } from '../utils/poolMath';
+import { PluginWhitelistABI } from '../contracts/abis';
 import { shortenAddress, formatUSD } from '../utils/formatters';
 import { useAdminAuth } from '../hooks/useAdminAuth';
 import {
@@ -41,7 +42,7 @@ import {
   Percent,
   AlertTriangle,
 } from 'lucide-react';
-import { formatUnits, isAddress, maxUint256, type Hex } from 'viem';
+import { formatUnits, isAddress, maxUint256, zeroAddress, type Hex } from 'viem';
 import { useAccount, useWriteContract, usePublicClient, useBalance } from 'wagmi';
 import { getAddressesForChain } from '../contracts/addresses';
 import {
@@ -73,12 +74,27 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
   const publicClient = usePublicClient();
   const addrs = getAddressesForChain(chain?.id ?? 31337);
   const { writeContractAsync } = useWriteContract();
+  const knownHooks = useMemo(() => getKnownHooks(addrs), [addrs]);
+  const knownTokens = useMemo(() => getKnownTokens(chain?.id ?? 31337), [chain?.id]);
 
-  // State: Pair Tokens — default ETH / USDC (matches common bootstrap pair)
-  const [token0, setToken0] = useState<KnownToken>(KNOWN_TOKENS[0]); // ETH
-  const [token1, setToken1] = useState<KnownToken>(KNOWN_TOKENS[1]); // USDC
-  const [customToken0Address, setCustomToken0Address] = useState<string>(KNOWN_TOKENS[0].address);
-  const [customToken1Address, setCustomToken1Address] = useState<string>(KNOWN_TOKENS[1].address);
+  // State: Pair Tokens — default native / first stable for the active chain
+  const [token0, setToken0] = useState<KnownToken>(() => getKnownTokens(31337)[0]);
+  const [token1, setToken1] = useState<KnownToken>(() => getKnownTokens(31337)[1]);
+  const [customToken0Address, setCustomToken0Address] = useState<string>(
+    () => getKnownTokens(31337)[0].address
+  );
+  const [customToken1Address, setCustomToken1Address] = useState<string>(
+    () => getKnownTokens(31337)[1].address
+  );
+
+  useEffect(() => {
+    if (knownTokens.length >= 2) {
+      setToken0(knownTokens[0]);
+      setToken1(knownTokens[1]);
+      setCustomToken0Address(knownTokens[0].address);
+      setCustomToken1Address(knownTokens[1].address);
+    }
+  }, [knownTokens]);
 
   // Token Selector Modal State
   const [isTokenModalOpen, setIsTokenModalOpen] = useState(false);
@@ -92,10 +108,7 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
 
   // State: Fee & Hook
   const [selectedFee, setSelectedFee] = useState<number>(3000); // 0.30%
-  const [pluginAddress, setPluginAddress] = useState<string>(
-    KNOWN_HOOKS.find((h) => h.type === 'lvr')?.address ??
-      '0x0000000000000000000000000000000000000000'
-  );
+  const [pluginAddress, setPluginAddress] = useState<string>(zeroAddress);
   const [customPluginAddress, setCustomPluginAddress] = useState('');
   const [isCustomPlugin, setIsCustomPlugin] = useState(false);
 
@@ -295,13 +308,18 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
 
   // Filter token list for modal
   const filteredTokens = useMemo(() => {
-    return KNOWN_TOKENS.filter(
+    return knownTokens.filter(
       (t: KnownToken) =>
         t.symbol.toLowerCase().includes(tokenSearch.toLowerCase()) ||
         t.name.toLowerCase().includes(tokenSearch.toLowerCase()) ||
         t.address.toLowerCase().includes(tokenSearch.toLowerCase())
     );
-  }, [tokenSearch]);
+  }, [tokenSearch, knownTokens]);
+
+  useEffect(() => {
+    const lvr = knownHooks.find((h) => h.type === 'lvr')?.address;
+    if (lvr && pluginAddress === zeroAddress) setPluginAddress(lvr);
+  }, [knownHooks, pluginAddress]);
 
   const waitForSuccess = async (hash: Hex) => {
     if (!publicClient) throw new Error('RPC client unavailable');
@@ -792,9 +810,8 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
 
               {!isCustomPlugin ? (
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {KNOWN_HOOKS.map((h) => {
+                  {knownHooks.map((h) => {
                     const isSelected = pluginAddress.toLowerCase() === h.address.toLowerCase();
-
                     return (
                       <button
                         key={h.address}
@@ -811,9 +828,14 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
                           <p className="text-[10px] opacity-75 line-clamp-2 leading-tight">
                             {h.description}
                           </p>
+                          {h.needsCanReturnDelta && (
+                            <p className="text-[10px] text-amber-500 font-mono">
+                              Requires canReturnDelta
+                            </p>
+                          )}
                         </div>
                         <div className="text-[9px] font-mono opacity-60">
-                          {h.address === '0x0000000000000000000000000000000000000000'
+                          {h.address === zeroAddress
                             ? '0x0000...0000'
                             : shortenAddress(h.address, 4)}
                         </div>
@@ -825,32 +847,17 @@ export const CreatePoolPage: React.FC<CreatePoolPageProps> = ({
                 <div className="space-y-1.5">
                   <Input
                     value={customPluginAddress}
-                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCustomPluginAddress(e.target.value.trim())}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                      setCustomPluginAddress(e.target.value.trim())
+                    }
                     placeholder="0x... (must implement IHooks / IPoolPlugin)"
                     className="font-mono text-xs"
                   />
                   <p className="text-[10px] text-neutral-400">
-                    Hook contract address must contain authorized permission bitmask flags.
+                    Custom plugin must be Timelock-whitelisted before initialize.
                   </p>
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* STEP 4: Initial Exchange Rate & Seed Inventory */}
-          <div className="bg-white dark:bg-[#111317] border border-neutral-200/80 dark:border-white/[0.08] rounded-3xl p-6 shadow-xs space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <span className="w-5 h-5 rounded-full bg-neutral-900 text-white dark:bg-white dark:text-black text-[11px] font-bold flex items-center justify-center font-mono">
-                  4
-                </span>
-                <h2 className="text-sm font-bold text-neutral-900 dark:text-white">
-                  Opening Price & Seed Inventory
-                </h2>
-              </div>
-              <span className="text-xs font-mono font-semibold text-neutral-900 dark:text-white">
-                Total Seed: {formatUSD(totalValueUSD)}
-              </span>
             </div>
 
             {/* Price Input Row */}
